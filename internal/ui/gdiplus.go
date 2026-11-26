@@ -38,6 +38,7 @@ var (
 	procGdipSetInterpolationMode      = modGdiplus.NewProc("GdipSetInterpolationMode")
 	procGdipSetTextRenderingHint      = modGdiplus.NewProc("GdipSetTextRenderingHint")
 	procGdipCreateSolidFill           = modGdiplus.NewProc("GdipCreateSolidFill")
+	procGdipCreateLineBrushI          = modGdiplus.NewProc("GdipCreateLineBrushI")
 	procGdipDeleteBrush               = modGdiplus.NewProc("GdipDeleteBrush")
 	procGdipCreateFontFamilyFromName  = modGdiplus.NewProc("GdipCreateFontFamilyFromName")
 	procGdipDeleteFontFamily          = modGdiplus.NewProc("GdipDeleteFontFamily")
@@ -176,6 +177,25 @@ func gpCreateSolidBrush(argb uint32) (uintptr, error) {
 	return brush, nil
 }
 
+func gpCreateLinearBrushI(x1, y1, x2, y2 int32, color1, color2 uint32) (uintptr, error) {
+	p1 := gpPointI{X: x1, Y: y1}
+	p2 := gpPointI{X: x2, Y: y2}
+	var brush uintptr
+	// WrapModeTileFlipX (1) is required by GDI+ (WrapModeClamp is rejected by linear gradient brushes).
+	status, _, _ := procGdipCreateLineBrushI.Call(
+		uintptr(unsafe.Pointer(&p1)),
+		uintptr(unsafe.Pointer(&p2)),
+		uintptr(color1),
+		uintptr(color2),
+		1,
+		uintptr(unsafe.Pointer(&brush)),
+	)
+	if status != 0 || brush == 0 {
+		return 0, fmt.Errorf("GdipCreateLineBrushI failed with status %d", status)
+	}
+	return brush, nil
+}
+
 func gpCreateStringFormat(hAlign, vAlign int32) (uintptr, error) {
 	var fmtHandle uintptr
 	status, _, _ := procGdipCreateStringFormat.Call(0, 0, uintptr(unsafe.Pointer(&fmtHandle)))
@@ -271,27 +291,45 @@ func gpFillRoundedRect(graphics, brush uintptr, x, y, w, h, r int32) {
 	k := (r*5523 + 5000) / 10000
 	x0, y0, x1, y1 := x, y, x+w, y+h
 
-	pts := []gpPointI{
-		// Top-left arc -> top edge -> top-right arc
-		{x0, y0 + r},
-		{x0, y0 + r - k}, {x0 + r - k, y0}, {x0 + r, y0},
-		// Line to top-right arc start
-		{x1 - r, y0},
-		{x1 - r, y0}, {x1 - r, y0}, {x1 - r, y0},
-		// Top-right corner
-		{x1 - r + k, y0}, {x1, y0 + r - k}, {x1, y0 + r},
-		// Line to bottom-right
-		{x1, y1 - r},
-		{x1, y1 - r}, {x1, y1 - r}, {x1, y1 - r},
-		// Bottom-right corner
-		{x1, y1 - r + k}, {x1 - r + k, y1}, {x1 - r, y1},
-		// Line to bottom-left
-		{x0 + r, y1},
-		{x0 + r, y1}, {x0 + r, y1}, {x0 + r, y1},
-		// Bottom-left corner
-		{x0 + r - k, y1}, {x0, y1 - r + k}, {x0, y1 - r},
+	addCorner := func(p0, c1, c2, p3 gpPointI) {
+		pts := [4]gpPointI{p0, c1, c2, p3}
+		_, _, _ = procGdipAddPathBeziersI.Call(path, uintptr(unsafe.Pointer(&pts[0])), 4)
 	}
-	_, _, _ = procGdipAddPathBeziersI.Call(path, uintptr(unsafe.Pointer(&pts[0])), uintptr(len(pts)))
+
+	// Top-left corner -> top edge -> top-right corner
+	addCorner(
+		gpPointI{x0, y0 + r},
+		gpPointI{x0, y0 + r - k},
+		gpPointI{x0 + r - k, y0},
+		gpPointI{x0 + r, y0},
+	)
+	if x1-r > x0+r {
+		_, _, _ = procGdipAddPathLineI.Call(path, uintptr(x0+r), uintptr(y0), uintptr(x1-r), uintptr(y0))
+	}
+	addCorner(
+		gpPointI{x1 - r, y0},
+		gpPointI{x1 - r + k, y0},
+		gpPointI{x1, y0 + r - k},
+		gpPointI{x1, y0 + r},
+	)
+	if y1-r > y0+r {
+		_, _, _ = procGdipAddPathLineI.Call(path, uintptr(x1), uintptr(y0+r), uintptr(x1), uintptr(y1-r))
+	}
+	addCorner(
+		gpPointI{x1, y1 - r},
+		gpPointI{x1, y1 - r + k},
+		gpPointI{x1 - r + k, y1},
+		gpPointI{x1 - r, y1},
+	)
+	if x1-r > x0+r {
+		_, _, _ = procGdipAddPathLineI.Call(path, uintptr(x1-r), uintptr(y1), uintptr(x0+r), uintptr(y1))
+	}
+	addCorner(
+		gpPointI{x0 + r, y1},
+		gpPointI{x0 + r - k, y1},
+		gpPointI{x0, y1 - r + k},
+		gpPointI{x0, y1 - r},
+	)
 	_, _, _ = procGdipClosePathFigure.Call(path)
 	_, _, _ = procGdipFillPath.Call(graphics, brush, path)
 }

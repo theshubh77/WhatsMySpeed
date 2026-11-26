@@ -1,12 +1,17 @@
 package ui
 
 import (
+	"image"
+	"image/png"
+	"os"
+	"path/filepath"
 	"testing"
 	"unsafe"
 
 	"github.com/WhatsMySpeed/WhatsMySpeed/assets"
 	"github.com/WhatsMySpeed/WhatsMySpeed/internal/config"
 	"github.com/WhatsMySpeed/WhatsMySpeed/internal/network"
+	"github.com/WhatsMySpeed/WhatsMySpeed/internal/speedtest"
 )
 
 func TestWin32StructSizes(t *testing.T) {
@@ -297,6 +302,13 @@ func TestSettingsWindowSceneAndHitTest(t *testing.T) {
 	sw.dpi = 96
 	sw.clientW = baseWindowW
 	sw.clientH = baseWindowH
+	sw.stProgress = speedtest.Progress{
+		Phase:        speedtest.PhaseDone,
+		Percent:      100,
+		PingMs:       18,
+		DownloadMbps: 30.4,
+		UploadMbps:   12.1,
+	}
 	defer sw.releaseDrawResources()
 
 	for _, isLight := range []bool{false, true} {
@@ -312,6 +324,25 @@ func TestSettingsWindowSceneAndHitTest(t *testing.T) {
 		sw.renderScene(gfx, sw.clientW, sw.clientH, 96, isLight)
 		_, _, _ = procGdipDeleteGraphics.Call(gfx)
 
+		if outDir := os.Getenv("WHATSMYSPEED_PREVIEW_DIR"); outDir != "" {
+			name := "dark.png"
+			if isLight {
+				name = "light.png"
+			}
+			pix := unsafe.Slice((*byte)(sw.pBits), int(sw.dibW)*int(sw.dibH)*4)
+			img := image.NewNRGBA(image.Rect(0, 0, int(sw.dibW), int(sw.dibH)))
+			for i := 0; i < len(pix); i += 4 {
+				img.Pix[i+0] = pix[i+2]
+				img.Pix[i+1] = pix[i+1]
+				img.Pix[i+2] = pix[i+0]
+				img.Pix[i+3] = 255
+			}
+			if f, err := os.Create(filepath.Join(outDir, name)); err == nil {
+				_ = png.Encode(f, img)
+				_ = f.Close()
+			}
+		}
+
 		if len(sw.controls) < 15 {
 			t.Fatalf("expected >=15 interactive controls, got %d", len(sw.controls))
 		}
@@ -323,5 +354,30 @@ func TestSettingsWindowSceneAndHitTest(t *testing.T) {
 				t.Fatalf("hitTest(%d,%d) = %v, want %v", cx, cy, got, c.action)
 			}
 		}
+	}
+}
+
+func TestGaugeCurveAndArcPath(t *testing.T) {
+	token, err := StartupGDIPlus()
+	if err != nil {
+		t.Fatalf("StartupGDIPlus failed: %v", err)
+	}
+	defer ShutdownGDIPlus(token)
+
+	prev := -1.0
+	for _, mbps := range []float64{0, 5, 12, 30, 100, 500, 1000, 2000} {
+		f := speedToGaugeFraction(mbps)
+		if f < 0 || f > 1 || f < prev {
+			t.Fatalf("speedToGaugeFraction(%v) = %v (prev=%v)", mbps, f, prev)
+		}
+		prev = f
+	}
+
+	for _, sweep := range []float64{10, 135, 270} {
+		p, err := buildGaugeArcPath(250, 170, 94, 80, 135, sweep)
+		if err != nil || p == 0 {
+			t.Fatalf("buildGaugeArcPath(sweep=%v) failed: %v", sweep, err)
+		}
+		_, _, _ = procGdipDeletePath.Call(p)
 	}
 }

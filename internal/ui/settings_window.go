@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"unsafe"
 
@@ -16,8 +17,8 @@ const (
 	settingsClassName = "WhatsMySpeedDashboardWindow"
 	sponsorURL        = "https://github.com/sponsors/theshubh77"
 
-	baseWindowW = 540
-	baseWindowH = 668
+	baseWindowW = 500
+	baseWindowH = 648
 )
 
 type controlAction int
@@ -52,85 +53,83 @@ type uiControl struct {
 }
 
 type dashboardPalette struct {
-	isLight       bool
-	windowBG      uint32
-	cardBG        uint32
-	cardBorder    uint32
-	pillBG        uint32
-	pillHoverBG   uint32
-	accent        uint32
-	accentHover   uint32
-	accentText    uint32
-	downloadColor uint32
-	uploadColor   uint32
-	pingColor     uint32
-	textPrimary   uint32
-	textMuted     uint32
-	trackBG       uint32
-	switchOffBG   uint32
-	knobARGB      uint32
-	badgeBG       uint32
+	isLight     bool
+	windowBG    uint32
+	cardBG      uint32
+	cardBorder  uint32
+	pillBG      uint32
+	pillHoverBG uint32
+	brandCyan   uint32
+	brandLime   uint32
+	brandMint   uint32
+	accentText  uint32
+	textPrimary uint32
+	textMuted   uint32
+	trackBG     uint32
+	tickColor   uint32
+	switchOffBG uint32
+	knobARGB    uint32
+	badgeBG     uint32
 }
 
 func getDashboardPalette(isLight bool) dashboardPalette {
 	if isLight {
 		return dashboardPalette{
-			isLight:       true,
-			windowBG:      0xFFF3F5F8,
-			cardBG:        0xFFFFFFFF,
-			cardBorder:    0xFFE1E5EC,
-			pillBG:        0xFFF0F2F6,
-			pillHoverBG:   0xFFE4E8F0,
-			accent:        0xFF0067C0,
-			accentHover:   0xFF005AA8,
-			accentText:    0xFFFFFFFF,
-			downloadColor: 0xFF0067C0,
-			uploadColor:   0xFF6B4EFF,
-			pingColor:     0xFF0F8B5F,
-			textPrimary:   0xFF1A1D24,
-			textMuted:     0xFF5D6575,
-			trackBG:       0xFFE3E7EE,
-			switchOffBG:   0xFFC0C6D2,
-			knobARGB:      0xFFFFFFFF,
-			badgeBG:       0xFFEBF0F7,
+			isLight:     true,
+			windowBG:    0xFFF4F7FA,
+			cardBG:      0xFFFFFFFF,
+			cardBorder:  0xFFE2E8F0,
+			pillBG:      0xFFEDF2F7,
+			pillHoverBG: 0xFFE2E8F0,
+			brandCyan:   0xFF0891B2,
+			brandLime:   0xFF65A30D,
+			brandMint:   0xFF0D9488,
+			accentText:  0xFFFFFFFF,
+			textPrimary: 0xFF0F172A,
+			textMuted:   0xFF64748B,
+			trackBG:     0xFFE2E8F0,
+			tickColor:   0xFFCBD5E1,
+			switchOffBG: 0xFFCBD5E1,
+			knobARGB:    0xFFFFFFFF,
+			badgeBG:     0xFFEDF2F7,
 		}
 	}
+	// Brand palette derived directly from WhatsMySpeed logo (#0B0F19, #22D3EE, #A3E635).
 	return dashboardPalette{
-		isLight:       false,
-		windowBG:      0xFF17181C,
-		cardBG:        0xFF22242A,
-		cardBorder:    0xFF333640,
-		pillBG:        0xFF2C2F37,
-		pillHoverBG:   0xFF363A45,
-		accent:        0xFF4CC2FF,
-		accentHover:   0xFF38B4F2,
-		accentText:    0xFF08141E,
-		downloadColor: 0xFF4CC2FF,
-		uploadColor:   0xFFA78BFA,
-		pingColor:     0xFF4ADE80,
-		textPrimary:   0xFFF4F6FA,
-		textMuted:     0xFF9EA6B5,
-		trackBG:       0xFF2F333E,
-		switchOffBG:   0xFF454A57,
-		knobARGB:      0xFFFFFFFF,
-		badgeBG:       0xFF2A2D36,
+		isLight:     false,
+		windowBG:    0xFF0B0F19,
+		cardBG:      0xFF121826,
+		cardBorder:  0xFF1E293B,
+		pillBG:      0xFF1A2233,
+		pillHoverBG: 0xFF232E45,
+		brandCyan:   0xFF22D3EE,
+		brandLime:   0xFFA3E635,
+		brandMint:   0xFF5EEAD4,
+		accentText:  0xFF07131A,
+		textPrimary: 0xFFF8FAFC,
+		textMuted:   0xFF8E9BB0,
+		trackBG:     0xFF1D273B,
+		tickColor:   0xFF2E3D59,
+		switchOffBG: 0xFF28354D,
+		knobARGB:    0xFFFFFFFF,
+		badgeBG:     0xFF131A29,
 	}
 }
 
-// SettingsWindow implements the native Windows 11 WhatsMySpeed dashboard with
-// taskbar customization controls and a built-in multi-stream Speed Test.
+// SettingsWindow implements the minimal, brand-styled WhatsMySpeed window with
+// a speedometer gauge and pill-shaped taskbar configuration controls.
 type SettingsWindow struct {
-	app         *App
-	hwnd        uintptr
-	classReg    bool
-	hIconSmall  uintptr
-	hIconBig    uintptr
-	dpi         uint32
-	clientW     int32
-	clientH     int32
-	hoveredAct  controlAction
-	tracking    bool
-	controls    []uiControl
+	app        *App
+	hwnd       uintptr
+	classReg   bool
+	hIconSmall uintptr
+	hIconBig   uintptr
+	dpi        uint32
+	clientW    int32
+	clientH    int32
+	hoveredAct controlAction
+	tracking   bool
+	controls   []uiControl
 
 	// Offscreen DIB for flicker-free WM_PAINT.
 	memDC     uintptr
@@ -142,15 +141,17 @@ type SettingsWindow struct {
 	dibH      int32
 
 	// Cached fonts & header icon.
-	fontTitle   uintptr
-	fontSection uintptr
-	fontBody    uintptr
-	fontSmall   uintptr
-	fontMetric  uintptr
-	gaugeBmp    uintptr
-	gaugeBuf    []byte
-	resDPI      uint32
-	resLight    bool
+	fontTitle      uintptr
+	fontBody       uintptr
+	fontSmall      uintptr
+	fontCaps       uintptr
+	fontGaugeHero  uintptr
+	fontGaugeUnit  uintptr
+	fontPillMetric uintptr
+	logoBmp        uintptr
+	logoBuf        []byte
+	resDPI         uint32
+	resLight       bool
 
 	// Speed test runtime state.
 	stMu       sync.Mutex
@@ -164,14 +165,12 @@ func NewSettingsWindow(app *App) *SettingsWindow {
 	return &SettingsWindow{
 		app: app,
 		stProgress: speedtest.Progress{
-			Phase:       speedtest.PhaseIdle,
-			ServerLabel: "Cloudflare Edge",
-			StatusText:  "Ready to test your connection",
+			Phase: speedtest.PhaseIdle,
 		},
 	}
 }
 
-// Show displays and focuses the WhatsMySpeed settings and speedtest window.
+// Show displays and focuses the WhatsMySpeed window.
 func (w *SettingsWindow) Show(startSpeedTest bool) {
 	if w.hwnd == 0 {
 		if err := w.create(); err != nil {
@@ -189,7 +188,7 @@ func (w *SettingsWindow) Show(startSpeedTest bool) {
 	}
 }
 
-// RefreshAppearance forces a repaint and updates title bar theme / DPI sizing.
+// RefreshAppearance forces a repaint and syncs title bar theme.
 func (w *SettingsWindow) RefreshAppearance() {
 	if w.hwnd == 0 {
 		return
@@ -200,7 +199,7 @@ func (w *SettingsWindow) RefreshAppearance() {
 	}
 }
 
-// NotifySampleUpdated refreshes live speed metrics when the dashboard window is open.
+// NotifySampleUpdated refreshes the live header readout when the window is visible.
 func (w *SettingsWindow) NotifySampleUpdated() {
 	if w.hwnd == 0 {
 		return
@@ -302,10 +301,10 @@ func (w *SettingsWindow) create() error {
 	w.hIconSmall, _ = CreatePNGHICON(assets.AppLogoPNG, scaleDPIInt(16, dpi), scaleDPIInt(16, dpi))
 	w.hIconBig, _ = CreatePNGHICON(assets.AppLogoPNG, scaleDPIInt(32, dpi), scaleDPIInt(32, dpi))
 	if w.hIconSmall == 0 {
-		w.hIconSmall, _ = CreateSizedHICON(assets.IconGaugeBold, scaleDPIInt(16, dpi), scaleDPIInt(16, dpi), 0xFF4CC2FF)
+		w.hIconSmall, _ = CreateSizedHICON(assets.IconGaugeBold, scaleDPIInt(16, dpi), scaleDPIInt(16, dpi), 0xFF22D3EE)
 	}
 	if w.hIconBig == 0 {
-		w.hIconBig, _ = CreateSizedHICON(assets.IconGaugeBold, scaleDPIInt(32, dpi), scaleDPIInt(32, dpi), 0xFF4CC2FF)
+		w.hIconBig, _ = CreateSizedHICON(assets.IconGaugeBold, scaleDPIInt(32, dpi), scaleDPIInt(32, dpi), 0xFF22D3EE)
 	}
 	if w.hIconSmall != 0 {
 		_, _, _ = procSendMessageW.Call(w.hwnd, wmSetIcon, iconSmall, w.hIconSmall)
@@ -544,10 +543,8 @@ func (w *SettingsWindow) startSpeedTest() {
 	w.stRunning = true
 	w.stCancel = cancel
 	w.stProgress = speedtest.Progress{
-		Phase:       speedtest.PhasePing,
-		Percent:     2,
-		ServerLabel: "Cloudflare Edge",
-		StatusText:  "Connecting & measuring latency...",
+		Phase:   speedtest.PhasePing,
+		Percent: 2,
 	}
 	w.stMu.Unlock()
 	w.invalidate()
@@ -588,17 +585,19 @@ func (w *SettingsWindow) ensureDrawResources(dpi uint32, isLight bool) {
 		if fam == "" {
 			fam = ResolveTaskbarFontName()
 		}
-		w.fontTitle, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(20, dpi), 700)
-		w.fontSection, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(14, dpi), 600)
-		w.fontBody, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(12, dpi), 500)
-		w.fontSmall, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(11, dpi), 400)
-		w.fontMetric, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(18, dpi), 700)
+		w.fontTitle, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(18, dpi), 700)
+		w.fontBody, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(12, dpi), 600)
+		w.fontSmall, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(11, dpi), 500)
+		w.fontCaps, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(10, dpi), 700)
+		w.fontGaugeHero, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(40, dpi), 700)
+		w.fontGaugeUnit, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(13, dpi), 600)
+		w.fontPillMetric, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(13, dpi), 700)
 
-		iconPx := scaleDPIInt(32, dpi)
-		w.gaugeBmp, w.gaugeBuf, _ = DecodePNGToBitmap(assets.AppLogoPNG, iconPx, iconPx)
-		if w.gaugeBmp == 0 {
+		iconPx := scaleDPIInt(28, dpi)
+		w.logoBmp, w.logoBuf, _ = DecodePNGToBitmap(assets.AppLogoPNG, iconPx, iconPx)
+		if w.logoBmp == 0 {
 			pal := getDashboardPalette(isLight)
-			w.gaugeBmp, w.gaugeBuf, _ = RasterizeSVGToBitmap(assets.IconGaugeBold, iconPx, iconPx, pal.accent)
+			w.logoBmp, w.logoBuf, _ = RasterizeSVGToBitmap(assets.IconGaugeBold, iconPx, iconPx, pal.brandCyan)
 		}
 
 		w.resDPI = dpi
@@ -684,7 +683,121 @@ func (w *SettingsWindow) paintClient(hdc uintptr) {
 	)
 }
 
-// renderScene draws the full WhatsMySpeed dashboard onto gfx and populates interactive hit-test regions.
+// speedToGaugeFraction maps Mbps onto a Speedtest-style non-linear gauge scale [0..1].
+func speedToGaugeFraction(mbps float64) float64 {
+	if mbps <= 0 {
+		return 0
+	}
+	stops := []struct{ mbps, frac float64 }{
+		{0, 0.00},
+		{5, 0.16},
+		{15, 0.34},
+		{30, 0.50},
+		{60, 0.65},
+		{120, 0.78},
+		{250, 0.88},
+		{500, 0.95},
+		{1000, 1.00},
+	}
+	if mbps >= stops[len(stops)-1].mbps {
+		return 1.0
+	}
+	for i := 1; i < len(stops); i++ {
+		if mbps <= stops[i].mbps {
+			span := stops[i].mbps - stops[i-1].mbps
+			t := (mbps - stops[i-1].mbps) / span
+			return stops[i-1].frac + t*(stops[i].frac-stops[i-1].frac)
+		}
+	}
+	return 1.0
+}
+
+// buildGaugeArcPath constructs a closed rounded-cap ring arc around (cx, cy) using pure integer Beziers.
+func buildGaugeArcPath(cx, cy, rOuter, rInner, startDeg, sweepDeg float64) (uintptr, error) {
+	if sweepDeg <= 0 {
+		return 0, nil
+	}
+	if sweepDeg > 359.5 {
+		sweepDeg = 359.5
+	}
+
+	var gpPath uintptr
+	st, _, _ := procGdipCreatePath.Call(gpFillModeWinding, uintptr(unsafe.Pointer(&gpPath)))
+	if st != 0 || gpPath == 0 {
+		return 0, fmt.Errorf("GdipCreatePath failed with status %d", st)
+	}
+
+	const scale = 64.0
+	sc := func(v float64) int32 { return int32(math.Round(v * scale)) }
+
+	addArcBeziers := func(acx, acy, r, aStartDeg, aEndDeg float64) {
+		total := aEndDeg - aStartDeg
+		segs := int(math.Ceil(math.Abs(total) / 45.0))
+		if segs < 1 {
+			segs = 1
+		}
+		step := total / float64(segs)
+		for i := 0; i < segs; i++ {
+			a0 := (aStartDeg + float64(i)*step) * math.Pi / 180.0
+			a1 := (aStartDeg + float64(i+1)*step) * math.Pi / 180.0
+			d := a1 - a0
+			k := (4.0 / 3.0) * math.Tan(d/4.0)
+
+			p0x, p0y := acx+r*math.Cos(a0), acy+r*math.Sin(a0)
+			c1x, c1y := p0x-k*r*math.Sin(a0), p0y+k*r*math.Cos(a0)
+			p3x, p3y := acx+r*math.Cos(a1), acy+r*math.Sin(a1)
+			c2x, c2y := p3x+k*r*math.Sin(a1), p3y-k*r*math.Cos(a1)
+
+			pts := [4]gpPointI{
+				{sc(p0x), sc(p0y)},
+				{sc(c1x), sc(c1y)},
+				{sc(c2x), sc(c2y)},
+				{sc(p3x), sc(p3y)},
+			}
+			_, _, _ = procGdipAddPathBeziersI.Call(gpPath, uintptr(unsafe.Pointer(&pts[0])), 4)
+		}
+	}
+
+	endDeg := startDeg + sweepDeg
+	rMid := (rOuter + rInner) / 2.0
+	rCap := (rOuter - rInner) / 2.0
+
+	_, _, _ = procGdipStartPathFigure.Call(gpPath)
+	// Outer arc clockwise
+	addArcBeziers(cx, cy, rOuter, startDeg, endDeg)
+	// End cap semicircle
+	endRad := endDeg * math.Pi / 180.0
+	addArcBeziers(cx+rMid*math.Cos(endRad), cy+rMid*math.Sin(endRad), rCap, endDeg, endDeg+180.0)
+	// Inner arc counter-clockwise back to start
+	addArcBeziers(cx, cy, rInner, endDeg, startDeg)
+	// Start cap semicircle
+	startRad := startDeg * math.Pi / 180.0
+	addArcBeziers(cx+rMid*math.Cos(startRad), cy+rMid*math.Sin(startRad), rCap, startDeg+180.0, startDeg+360.0)
+	_, _, _ = procGdipClosePathFigure.Call(gpPath)
+
+	// Scale subpixel path back down to 1:1 device pixels using integer matrix.
+	boundW := int32(math.Ceil(cx+rOuter)) + 16
+	boundH := int32(math.Ceil(cy+rOuter)) + 16
+	srcRect := gpRectI{X: 0, Y: 0, Width: boundW * int32(scale), Height: boundH * int32(scale)}
+	dstPlg := [3]gpPointI{
+		{X: 0, Y: 0},
+		{X: boundW, Y: 0},
+		{X: 0, Y: boundH},
+	}
+	var matrix uintptr
+	st, _, _ = procGdipCreateMatrix3I.Call(
+		uintptr(unsafe.Pointer(&srcRect)),
+		uintptr(unsafe.Pointer(&dstPlg[0])),
+		uintptr(unsafe.Pointer(&matrix)),
+	)
+	if st == 0 && matrix != 0 {
+		_, _, _ = procGdipTransformPath.Call(gpPath, matrix)
+		_, _, _ = procGdipDeleteMatrix.Call(matrix)
+	}
+	return gpPath, nil
+}
+
+// renderScene draws the minimal brand-colored dashboard onto gfx and populates interactive controls.
 func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint32, isLight bool) {
 	pal := getDashboardPalette(isLight)
 	s := func(px int32) int32 { return scaleDPIInt(px, dpi) }
@@ -697,7 +810,6 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 
 	fmtNear, _ := gpCreateStringFormat(gpStringAlignmentNear, gpStringAlignmentCenter)
 	fmtCenter, _ := gpCreateStringFormat(gpStringAlignmentCenter, gpStringAlignmentCenter)
-	fmtFar, _ := gpCreateStringFormat(gpStringAlignmentFar, gpStringAlignmentCenter)
 	defer func() {
 		if fmtNear != 0 {
 			_, _, _ = procGdipDeleteStringFormat.Call(fmtNear)
@@ -705,29 +817,25 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		if fmtCenter != 0 {
 			_, _, _ = procGdipDeleteStringFormat.Call(fmtCenter)
 		}
-		if fmtFar != 0 {
-			_, _, _ = procGdipDeleteStringFormat.Call(fmtFar)
-		}
 	}()
 
 	bCard, _ := gpCreateSolidBrush(pal.cardBG)
 	bBorder, _ := gpCreateSolidBrush(pal.cardBorder)
 	bPill, _ := gpCreateSolidBrush(pal.pillBG)
 	bPillHover, _ := gpCreateSolidBrush(pal.pillHoverBG)
-	bAccent, _ := gpCreateSolidBrush(pal.accent)
-	bAccentHover, _ := gpCreateSolidBrush(pal.accentHover)
+	bCyan, _ := gpCreateSolidBrush(pal.brandCyan)
+	bLime, _ := gpCreateSolidBrush(pal.brandLime)
+	bMint, _ := gpCreateSolidBrush(pal.brandMint)
 	bText, _ := gpCreateSolidBrush(pal.textPrimary)
 	bMuted, _ := gpCreateSolidBrush(pal.textMuted)
 	bAccentTxt, _ := gpCreateSolidBrush(pal.accentText)
 	bTrack, _ := gpCreateSolidBrush(pal.trackBG)
+	bTick, _ := gpCreateSolidBrush(pal.tickColor)
 	bBadge, _ := gpCreateSolidBrush(pal.badgeBG)
-	bDl, _ := gpCreateSolidBrush(pal.downloadColor)
-	bUl, _ := gpCreateSolidBrush(pal.uploadColor)
-	bPing, _ := gpCreateSolidBrush(pal.pingColor)
 	bSwitchOff, _ := gpCreateSolidBrush(pal.switchOffBG)
 	bKnob, _ := gpCreateSolidBrush(pal.knobARGB)
 	defer func() {
-		for _, b := range []uintptr{bCard, bBorder, bPill, bPillHover, bAccent, bAccentHover, bText, bMuted, bAccentTxt, bTrack, bBadge, bDl, bUl, bPing, bSwitchOff, bKnob} {
+		for _, b := range []uintptr{bCard, bBorder, bPill, bPillHover, bCyan, bLime, bMint, bText, bMuted, bAccentTxt, bTrack, bTick, bBadge, bSwitchOff, bKnob} {
 			if b != 0 {
 				_, _, _ = procGdipDeleteBrush.Call(b)
 			}
@@ -739,155 +847,216 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		gpFillRoundedRect(gfx, bCard, x+1, y+1, cw-2, ch-2, r-1)
 	}
 
+	// All buttons and option controls render as full capsule pills (radius = height/2).
 	drawPill := func(c uiControl) {
+		r := c.bounds.Height() / 2
+		if c.selected && c.isButton {
+			gradBrush, err := gpCreateLinearBrushI(
+				c.bounds.Left, c.bounds.Top,
+				c.bounds.Right, c.bounds.Bottom,
+				pal.brandCyan, pal.brandLime,
+			)
+			if err == nil {
+				gpFillRoundedRect(gfx, gradBrush, c.bounds.Left, c.bounds.Top, c.bounds.Width(), c.bounds.Height(), r)
+				_, _, _ = procGdipDeleteBrush.Call(gradBrush)
+			} else {
+				gpFillRoundedRect(gfx, bCyan, c.bounds.Left, c.bounds.Top, c.bounds.Width(), c.bounds.Height(), r)
+			}
+			gpDrawString(gfx, w.fontBody, fmtCenter, bAccentTxt, c.label, gpRectF{
+				X: float32(c.bounds.Left), Y: float32(c.bounds.Top),
+				Width: float32(c.bounds.Width()), Height: float32(c.bounds.Height()),
+			})
+			return
+		}
+
 		brush := bPill
 		txtBrush := bText
 		if c.selected {
-			brush = bAccent
+			brush = bCyan
 			txtBrush = bAccentTxt
-			if w.hoveredAct == c.action && c.isButton {
-				brush = bAccentHover
-			}
 		} else if w.hoveredAct == c.action {
 			brush = bPillHover
 		}
-		gpFillRoundedRect(gfx, brush, c.bounds.Left, c.bounds.Top, c.bounds.Width(), c.bounds.Height(), s(6))
-		font := w.fontBody
-		if c.isButton {
-			font = w.fontSection
-		}
-		gpDrawString(gfx, font, fmtCenter, txtBrush, c.label, gpRectF{
+		gpFillRoundedRect(gfx, brush, c.bounds.Left, c.bounds.Top, c.bounds.Width(), c.bounds.Height(), r)
+		gpDrawString(gfx, w.fontSmall, fmtCenter, txtBrush, c.label, gpRectF{
 			X: float32(c.bounds.Left), Y: float32(c.bounds.Top),
 			Width: float32(c.bounds.Width()), Height: float32(c.bounds.Height()),
 		})
 	}
 
-	marginX := s(18)
+	marginX := s(16)
 	cardW := width - marginX*2
 
-	// 1. Header
-	hdrY := s(16)
-	iconSz := s(32)
-	if w.gaugeBmp != 0 {
-		_, _, _ = procGdipDrawImageRectI.Call(gfx, w.gaugeBmp, uintptr(marginX), uintptr(hdrY+s(4)), uintptr(iconSz), uintptr(iconSz))
+	// 1. Minimal Header (Logo + App Name + Live Speed Pill)
+	hdrY := s(14)
+	iconSz := s(28)
+	if w.logoBmp != 0 {
+		_, _, _ = procGdipDrawImageRectI.Call(gfx, w.logoBmp, uintptr(marginX), uintptr(hdrY+s(2)), uintptr(iconSz), uintptr(iconSz))
 	}
-	titleX := float32(marginX + iconSz + s(12))
 	gpDrawString(gfx, w.fontTitle, fmtNear, bText, config.AppName, gpRectF{
-		X: titleX, Y: float32(hdrY), Width: float32(s(200)), Height: float32(s(26)),
-	})
-	nicSub := fmt.Sprintf("Windows 11 Speed Meter  •  %d active NIC", w.app.currentSample.ActiveInterfaces)
-	if w.app.currentSample.ActiveInterfaces != 1 {
-		nicSub = fmt.Sprintf("Windows 11 Speed Meter  •  %d active NICs", w.app.currentSample.ActiveInterfaces)
-	}
-	gpDrawString(gfx, w.fontSmall, fmtNear, bMuted, nicSub, gpRectF{
-		X: titleX, Y: float32(hdrY + s(27)), Width: float32(s(260)), Height: float32(s(16)),
+		X: float32(marginX + iconSz + s(10)), Y: float32(hdrY), Width: float32(s(170)), Height: float32(s(32)),
 	})
 
-	// Live speed summary badge on header right
-	badgeW := s(200)
-	badgeH := s(44)
-	badgeX := width - marginX - badgeW
-	badgeY := hdrY + s(2)
-	gpFillRoundedRect(gfx, bBadge, badgeX, badgeY, badgeW, badgeH, s(8))
+	liveBadgeW := s(212)
+	liveBadgeH := s(30)
+	liveBadgeX := width - marginX - liveBadgeW
+	liveBadgeY := hdrY + s(1)
+	gpFillRoundedRect(gfx, bBadge, liveBadgeX, liveBadgeY, liveBadgeW, liveBadgeH, liveBadgeH/2)
+
 	dlLive := w.app.formatRate(w.app.currentSample.DownloadBytesPerSec).String()
 	ulLive := w.app.formatRate(w.app.currentSample.UploadBytesPerSec).String()
-	gpDrawString(gfx, w.fontBody, fmtCenter, bDl, "↓ "+dlLive, gpRectF{
-		X: float32(badgeX + s(6)), Y: float32(badgeY + s(4)), Width: float32(badgeW - s(12)), Height: float32(s(18)),
+	halfBadgeW := (liveBadgeW - s(12)) / 2
+	gpDrawString(gfx, w.fontSmall, fmtCenter, bCyan, "↓ "+dlLive, gpRectF{
+		X: float32(liveBadgeX + s(6)), Y: float32(liveBadgeY), Width: float32(halfBadgeW), Height: float32(liveBadgeH),
 	})
-	gpDrawString(gfx, w.fontBody, fmtCenter, bUl, "↑ "+ulLive, gpRectF{
-		X: float32(badgeX + s(6)), Y: float32(badgeY + s(22)), Width: float32(badgeW - s(12)), Height: float32(s(18)),
+	gpDrawString(gfx, w.fontSmall, fmtCenter, bLime, "↑ "+ulLive, gpRectF{
+		X: float32(liveBadgeX + s(6) + halfBadgeW), Y: float32(liveBadgeY), Width: float32(halfBadgeW), Height: float32(liveBadgeH),
 	})
 
-	// 2. Speed Test Card
-	stCardY := s(76)
-	stCardH := s(178)
-	drawCard(marginX, stCardY, cardW, stCardH, s(10))
+	// 2. Big Speedometer Gauge Card
+	stCardY := s(60)
+	stCardH := s(298)
+	drawCard(marginX, stCardY, cardW, stCardH, s(16))
 
 	w.stMu.Lock()
 	stProg := w.stProgress
 	stRunning := w.stRunning
 	w.stMu.Unlock()
 
-	gpDrawString(gfx, w.fontSection, fmtNear, bText, "Speed Test", gpRectF{
-		X: float32(marginX + s(14)), Y: float32(stCardY + s(12)), Width: float32(s(150)), Height: float32(s(22)),
-	})
-	srvLabel := stProg.ServerLabel
-	if srvLabel == "" {
-		srvLabel = "Cloudflare Edge"
+	gaugeCX := float64(width) / 2.0
+	gaugeCY := float64(stCardY + s(112))
+	rOuter := float64(s(94))
+	rInner := float64(s(80))
+
+	// 270-degree background gauge track (135° to 405°)
+	if trackPath, err := buildGaugeArcPath(gaugeCX, gaugeCY, rOuter, rInner, 135.0, 270.0); err == nil && trackPath != 0 {
+		_, _, _ = procGdipFillPath.Call(gfx, bTrack, trackPath)
+		_, _, _ = procGdipDeletePath.Call(trackPath)
 	}
-	gpDrawString(gfx, w.fontSmall, fmtFar, bMuted, srvLabel, gpRectF{
-		X: float32(marginX + cardW - s(210)), Y: float32(stCardY + s(14)), Width: float32(s(196)), Height: float32(s(18)),
+
+	// Subtle radial tick dots along the inner arc
+	tickR := rInner - float64(s(9))
+	tickSize := s(4)
+	for i := 0; i <= 8; i++ {
+		ang := (135.0 + float64(i)*270.0/8.0) * math.Pi / 180.0
+		tx := int32(math.Round(gaugeCX+tickR*math.Cos(ang))) - tickSize/2
+		ty := int32(math.Round(gaugeCY+tickR*math.Sin(ang))) - tickSize/2
+		gpFillRoundedRect(gfx, bTick, tx, ty, tickSize, tickSize, tickSize/2)
+	}
+
+	// Determine active gauge sweep & hero center readout
+	phaseLabel := "READY"
+	heroValue := "—"
+	heroUnit := "Mbps"
+	var gaugeFrac float64
+
+	switch stProg.Phase {
+	case speedtest.PhasePing:
+		phaseLabel = "PING"
+		if stProg.PingMs > 0 {
+			heroValue = fmt.Sprintf("%.0f", stProg.PingMs)
+		}
+		heroUnit = "ms"
+		gaugeFrac = float64(stProg.Percent) / 15.0 * 0.25
+	case speedtest.PhaseDownload:
+		phaseLabel = "DOWNLOAD"
+		heroValue = fmt.Sprintf("%.1f", stProg.DownloadMbps)
+		heroUnit = "Mbps"
+		gaugeFrac = speedToGaugeFraction(stProg.DownloadMbps)
+	case speedtest.PhaseUpload:
+		phaseLabel = "UPLOAD"
+		heroValue = fmt.Sprintf("%.1f", stProg.UploadMbps)
+		heroUnit = "Mbps"
+		gaugeFrac = speedToGaugeFraction(stProg.UploadMbps)
+	case speedtest.PhaseDone:
+		phaseLabel = "DOWNLOAD"
+		heroValue = fmt.Sprintf("%.1f", stProg.DownloadMbps)
+		heroUnit = "Mbps"
+		gaugeFrac = speedToGaugeFraction(stProg.DownloadMbps)
+	case speedtest.PhaseCancelled:
+		phaseLabel = "CANCELLED"
+	case speedtest.PhaseError:
+		phaseLabel = "OFFLINE"
+		heroUnit = ""
+	}
+
+	if gaugeFrac > 0 {
+		if activePath, err := buildGaugeArcPath(gaugeCX, gaugeCY, rOuter, rInner, 135.0, gaugeFrac*270.0); err == nil && activePath != 0 {
+			x0 := int32(math.Round(gaugeCX - rOuter))
+			y0 := int32(math.Round(gaugeCY - rOuter))
+			x1 := int32(math.Round(gaugeCX + rOuter))
+			y1 := int32(math.Round(gaugeCY + rOuter))
+			gradBrush, gErr := gpCreateLinearBrushI(x0, y0, x1, y1, pal.brandCyan, pal.brandLime)
+			if gErr == nil {
+				_, _, _ = procGdipFillPath.Call(gfx, gradBrush, activePath)
+				_, _, _ = procGdipDeleteBrush.Call(gradBrush)
+			} else {
+				_, _, _ = procGdipFillPath.Call(gfx, bCyan, activePath)
+			}
+			_, _, _ = procGdipDeletePath.Call(activePath)
+		}
+	}
+
+	// Center Hero Typography inside Gauge
+	gpDrawString(gfx, w.fontCaps, fmtCenter, bMuted, phaseLabel, gpRectF{
+		X: float32(gaugeCX) - float32(s(70)), Y: float32(gaugeCY) - float32(s(44)),
+		Width: float32(s(140)), Height: float32(s(16)),
 	})
+	gpDrawString(gfx, w.fontGaugeHero, fmtCenter, bText, heroValue, gpRectF{
+		X: float32(gaugeCX) - float32(s(84)), Y: float32(gaugeCY) - float32(s(22)),
+		Width: float32(s(168)), Height: float32(s(44)),
+	})
+	if heroUnit != "" {
+		gpDrawString(gfx, w.fontGaugeUnit, fmtCenter, bMuted, heroUnit, gpRectF{
+			X: float32(gaugeCX) - float32(s(60)), Y: float32(gaugeCY) + float32(s(24)),
+			Width: float32(s(120)), Height: float32(s(18)),
+		})
+	}
 
-	// Three metric tiles: Ping, Download, Upload
-	tileGap := s(10)
-	tileW := (cardW - s(28) - tileGap*2) / 3
-	tileH := s(66)
-	tileY := stCardY + s(44)
-	tileStartX := marginX + s(14)
+	// Three compact result pills directly beneath the gauge
+	metricY := stCardY + s(202)
+	metricH := s(32)
+	metricGap := s(8)
+	metricPad := s(22)
+	metricW := (cardW - metricPad*2 - metricGap*2) / 3
 
-	pingStr := "—"
+	pingTxt := "Ping  —"
 	if stProg.PingMs > 0 {
-		pingStr = fmt.Sprintf("%.0f ms", stProg.PingMs)
+		pingTxt = fmt.Sprintf("Ping  %.0f ms", stProg.PingMs)
 	}
-	dlStr := "—"
+	dlTxt := "↓  —"
 	if stProg.DownloadMbps > 0 || stProg.Phase == speedtest.PhaseDone {
-		dlStr = fmt.Sprintf("%.1f Mbps", stProg.DownloadMbps)
+		dlTxt = fmt.Sprintf("↓  %.1f Mbps", stProg.DownloadMbps)
 	}
-	ulStr := "—"
+	ulTxt := "↑  —"
 	if stProg.UploadMbps > 0 || stProg.Phase == speedtest.PhaseDone {
-		ulStr = fmt.Sprintf("%.1f Mbps", stProg.UploadMbps)
+		ulTxt = fmt.Sprintf("↑  %.1f Mbps", stProg.UploadMbps)
 	}
 
-	tiles := []struct {
-		title string
-		val   string
+	metricPills := []struct {
+		text  string
 		brush uintptr
 	}{
-		{"PING", pingStr, bPing},
-		{"DOWNLOAD", dlStr, bDl},
-		{"UPLOAD", ulStr, bUl},
+		{pingTxt, bMint},
+		{dlTxt, bCyan},
+		{ulTxt, bLime},
 	}
-	for idx, tl := range tiles {
-		tx := tileStartX + int32(idx)*(tileW+tileGap)
-		gpFillRoundedRect(gfx, bPill, tx, tileY, tileW, tileH, s(8))
-		gpDrawString(gfx, w.fontSmall, fmtCenter, bMuted, tl.title, gpRectF{
-			X: float32(tx), Y: float32(tileY + s(8)), Width: float32(tileW), Height: float32(s(16)),
-		})
-		gpDrawString(gfx, w.fontMetric, fmtCenter, tl.brush, tl.val, gpRectF{
-			X: float32(tx + s(4)), Y: float32(tileY + s(28)), Width: float32(tileW - s(8)), Height: float32(s(28)),
+	for i, mp := range metricPills {
+		px := marginX + metricPad + int32(i)*(metricW+metricGap)
+		gpFillRoundedRect(gfx, bPill, px, metricY, metricW, metricH, metricH/2)
+		gpDrawString(gfx, w.fontPillMetric, fmtCenter, mp.brush, mp.text, gpRectF{
+			X: float32(px + s(4)), Y: float32(metricY), Width: float32(metricW - s(8)), Height: float32(metricH),
 		})
 	}
 
-	// Progress bar + Start/Cancel button
-	btnW := s(138)
-	btnH := s(36)
-	btnX := marginX + cardW - s(14) - btnW
-	btnY := stCardY + s(124)
-
-	statusW := btnX - (marginX + s(14)) - s(14)
-	statusText := stProg.StatusText
-	if stProg.Phase == speedtest.PhaseError && stProg.Error != "" {
-		statusText = stProg.Error
-	}
-	gpDrawString(gfx, w.fontSmall, fmtNear, bMuted, statusText, gpRectF{
-		X: float32(marginX + s(14)), Y: float32(btnY + s(2)), Width: float32(statusW), Height: float32(s(18)),
-	})
-
-	barY := btnY + s(24)
-	barH := s(8)
-	gpFillRoundedRect(gfx, bTrack, marginX+s(14), barY, statusW, barH, s(4))
-	if stProg.Percent > 0 {
-		fillW := (statusW * int32(stProg.Percent)) / 100
-		if fillW < barH {
-			fillW = barH
-		}
-		gpFillRoundedRect(gfx, bAccent, marginX+s(14), barY, fillW, barH, s(4))
-	}
-
+	// Centered capsule Start / Cancel / Test Again button
+	btnW := s(166)
+	btnH := s(38)
+	btnX := (width - btnW) / 2
+	btnY := stCardY + s(246)
 	btnLabel := "Start Speed Test"
 	if stRunning {
-		btnLabel = "Cancel Test"
+		btnLabel = "Cancel"
 	} else if stProg.Phase == speedtest.PhaseDone {
 		btnLabel = "Test Again"
 	}
@@ -901,97 +1070,88 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	w.controls = append(w.controls, stBtn)
 	drawPill(stBtn)
 
-	// 3. Taskbar Appearance Card
+	// 3. Minimal Settings Card (4 horizontal label + capsule pill rows)
 	appCardY := stCardY + stCardH + s(14)
-	appCardH := s(296)
-	drawCard(marginX, appCardY, cardW, appCardH, s(10))
-
-	gpDrawString(gfx, w.fontSection, fmtNear, bText, "Taskbar Appearance", gpRectF{
-		X: float32(marginX + s(14)), Y: float32(appCardY + s(12)), Width: float32(s(220)), Height: float32(s(22)),
-	})
+	appCardH := s(196)
+	drawCard(marginX, appCardY, cardW, appCardH, s(16))
 
 	cfg := w.app.cfg
-	rowStartX := marginX + s(14)
-	rowInnerW := cardW - s(28)
+	labelColW := s(56)
+	pillStartX := marginX + s(16) + labelColW
+	pillAreaW := cardW - s(32) - labelColW
+	pillH := s(32)
 
-	drawPillRow := func(y int32, label string, items []uiControl) {
-		gpDrawString(gfx, w.fontSmall, fmtNear, bMuted, label, gpRectF{
-			X: float32(rowStartX), Y: float32(y), Width: float32(rowInnerW), Height: float32(s(16)),
+	drawInlinePillRow := func(y int32, title string, items []uiControl) {
+		gpDrawString(gfx, w.fontSmall, fmtNear, bMuted, title, gpRectF{
+			X: float32(marginX + s(16)), Y: float32(y), Width: float32(labelColW - s(4)), Height: float32(pillH),
 		})
-		gap := s(8)
+		gap := s(6)
 		n := int32(len(items))
-		pw := (rowInnerW - gap*(n-1)) / n
-		ph := s(32)
-		py := y + s(20)
+		pw := (pillAreaW - gap*(n-1)) / n
 		for i := range items {
-			px := rowStartX + int32(i)*(pw+gap)
-			items[i].bounds = rect{Left: px, Top: py, Right: px + pw, Bottom: py + ph}
+			px := pillStartX + int32(i)*(pw+gap)
+			items[i].bounds = rect{Left: px, Top: y, Right: px + pw, Bottom: y + pillH}
 			w.controls = append(w.controls, items[i])
 			drawPill(items[i])
 		}
 	}
 
-	drawPillRow(appCardY+s(44), "Display Mode", []uiControl{
-		{action: actModeBoth, label: "Show Both", selected: cfg.DisplayMode == config.ModeBoth},
-		{action: actModeDownload, label: "Download Only", selected: cfg.DisplayMode == config.ModeDownload},
-		{action: actModeUpload, label: "Upload Only", selected: cfg.DisplayMode == config.ModeUpload},
-		{action: actModeHide, label: "Hide Speed", selected: cfg.DisplayMode == config.ModeHide},
+	rowStep := s(44)
+	row0Y := appCardY + s(16)
+	drawInlinePillRow(row0Y, "Show", []uiControl{
+		{action: actModeBoth, label: "Both", selected: cfg.DisplayMode == config.ModeBoth},
+		{action: actModeDownload, label: "Download", selected: cfg.DisplayMode == config.ModeDownload},
+		{action: actModeUpload, label: "Upload", selected: cfg.DisplayMode == config.ModeUpload},
+		{action: actModeHide, label: "Hide", selected: cfg.DisplayMode == config.ModeHide},
 	})
-
-	drawPillRow(appCardY+s(106), "Label Style", []uiControl{
-		{action: actLabelArrows, label: "Arrows (↑ ↓)", selected: cfg.LabelStyle == config.LabelArrows},
+	drawInlinePillRow(row0Y+rowStep, "Label", []uiControl{
+		{action: actLabelArrows, label: "Arrows", selected: cfg.LabelStyle == config.LabelArrows},
 		{action: actLabelUD, label: "U / D", selected: cfg.LabelStyle == config.LabelUD},
 		{action: actLabelWords, label: "Up / Down", selected: cfg.LabelStyle == config.LabelWords},
 	})
-
-	drawPillRow(appCardY+s(168), "Taskbar Layout", []uiControl{
-		{action: actLayoutStackU, label: "Stacked (↑/↓)", selected: cfg.Layout == config.LayoutStackedUp},
-		{action: actLayoutStackD, label: "Stacked (↓/↑)", selected: cfg.Layout == config.LayoutStackedDown},
+	drawInlinePillRow(row0Y+rowStep*2, "Layout", []uiControl{
+		{action: actLayoutStackU, label: "Up / Down", selected: cfg.Layout == config.LayoutStackedUp},
+		{action: actLayoutStackD, label: "Down / Up", selected: cfg.Layout == config.LayoutStackedDown},
 		{action: actLayoutInline, label: "Inline", selected: cfg.Layout == config.LayoutInline},
 		{action: actLayoutCompact, label: "Compact", selected: cfg.Layout == config.LayoutCompact},
 	})
-
-	drawPillRow(appCardY+s(230), "Speed Unit", []uiControl{
-		{action: actUnitBytes, label: "Bytes/s (KB/s, MB/s)", selected: cfg.SpeedUnit == config.UnitBytes},
-		{action: actUnitBits, label: "Bits/s (Kbps, Mbps)", selected: cfg.SpeedUnit == config.UnitBits},
+	drawInlinePillRow(row0Y+rowStep*3, "Unit", []uiControl{
+		{action: actUnitBytes, label: "Bytes/s (MB/s)", selected: cfg.SpeedUnit == config.UnitBytes},
+		{action: actUnitBits, label: "Bits/s (Mbps)", selected: cfg.SpeedUnit == config.UnitBits},
 	})
 
-	// 4. Footer: Start with Windows & Sponsor
+	// 4. Clean Minimal Footer Row (Start with Windows switch + Sponsor pill)
 	footY := appCardY + appCardH + s(14)
-	footH := s(72)
-	drawCard(marginX, footY, cardW, footH, s(10))
+	footH := s(54)
+	drawCard(marginX, footY, cardW, footH, s(16))
 
 	autoStart, _ := config.IsAutoStartEnabled()
-	swW := s(44)
-	swH := s(24)
-	swX := marginX + s(14)
-	swY := footY + s(14)
+	swW := s(40)
+	swH := s(22)
+	swX := marginX + s(16)
+	swY := footY + (footH-swH)/2
 
-	swCtrl := uiControl{
+	w.controls = append(w.controls, uiControl{
 		action:   actAutoStart,
-		bounds:   rect{Left: swX, Top: swY, Right: swX + s(210), Bottom: swY + swH},
+		bounds:   rect{Left: swX, Top: swY, Right: swX + s(185), Bottom: swY + swH},
 		isSwitch: true,
 		selected: autoStart,
-	}
-	w.controls = append(w.controls, swCtrl)
+	})
 
 	trackBrush := bSwitchOff
 	knobX := swX + s(3)
 	if autoStart {
-		trackBrush = bAccent
-		knobX = swX + swW - s(21)
+		trackBrush = bCyan
+		knobX = swX + swW - s(19)
 	}
 	gpFillRoundedRect(gfx, trackBrush, swX, swY, swW, swH, swH/2)
-	gpFillRoundedRect(gfx, bKnob, knobX, swY+s(3), s(18), s(18), s(9))
-	gpDrawString(gfx, w.fontBody, fmtNear, bText, "Start with Windows", gpRectF{
-		X: float32(swX + swW + s(10)), Y: float32(swY), Width: float32(s(160)), Height: float32(swH),
-	})
-	gpDrawString(gfx, w.fontSmall, fmtNear, bMuted, `Config: %APPDATA%\WhatsMySpeed\config.json`, gpRectF{
-		X: float32(swX), Y: float32(swY + swH + s(6)), Width: float32(s(300)), Height: float32(s(16)),
+	gpFillRoundedRect(gfx, bKnob, knobX, swY+s(3), s(16), s(16), s(8))
+	gpDrawString(gfx, w.fontSmall, fmtNear, bText, "Start with Windows", gpRectF{
+		X: float32(swX + swW + s(10)), Y: float32(footY), Width: float32(s(140)), Height: float32(footH),
 	})
 
-	spW := s(168)
-	spH := s(34)
+	spW := s(164)
+	spH := s(32)
 	spX := marginX + cardW - s(14) - spW
 	spY := footY + (footH-spH)/2
 	spCtrl := uiControl{
@@ -1026,17 +1186,20 @@ func (w *SettingsWindow) releaseDIB() {
 }
 
 func (w *SettingsWindow) releaseFontAndIconResources() {
-	for _, f := range []*uintptr{&w.fontTitle, &w.fontSection, &w.fontBody, &w.fontSmall, &w.fontMetric} {
+	for _, f := range []*uintptr{
+		&w.fontTitle, &w.fontBody, &w.fontSmall, &w.fontCaps,
+		&w.fontGaugeHero, &w.fontGaugeUnit, &w.fontPillMetric,
+	} {
 		if *f != 0 {
 			_, _, _ = procGdipDeleteFont.Call(*f)
 			*f = 0
 		}
 	}
-	if w.gaugeBmp != 0 {
-		_, _, _ = procGdipDisposeImage.Call(w.gaugeBmp)
-		w.gaugeBmp = 0
+	if w.logoBmp != 0 {
+		_, _, _ = procGdipDisposeImage.Call(w.logoBmp)
+		w.logoBmp = 0
 	}
-	w.gaugeBuf = nil
+	w.logoBuf = nil
 }
 
 func (w *SettingsWindow) releaseDrawResources() {
