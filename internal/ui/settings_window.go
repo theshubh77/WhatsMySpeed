@@ -1370,7 +1370,7 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	btnH := s(44)
 	btnX := (width - btnW) / 2
 	btnY := stCardY + s(270)
-	btnLabel := "Start Speed Test"
+	btnLabel := "Run Speed Test"
 	if stRunning {
 		btnLabel = "Cancel"
 	} else if stProg.Phase == speedtest.PhaseDone {
