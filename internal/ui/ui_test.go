@@ -12,6 +12,7 @@ import (
 	"github.com/WhatsMySpeed/WhatsMySpeed/internal/config"
 	"github.com/WhatsMySpeed/WhatsMySpeed/internal/network"
 	"github.com/WhatsMySpeed/WhatsMySpeed/internal/speedtest"
+	"golang.org/x/sys/windows"
 )
 
 func TestWin32StructSizes(t *testing.T) {
@@ -400,5 +401,153 @@ func TestGaugeCurveAndArcPath(t *testing.T) {
 			t.Fatalf("buildGaugeArcPath(sweep=%v) failed: %v", sweep, err)
 		}
 		_, _, _ = procGdipDeletePath.Call(p)
+	}
+}
+
+func TestIsShellOrFlyoutWindow(t *testing.T) {
+	shellCases := []struct {
+		className string
+		exeName   string
+	}{
+		{"Progman", "explorer.exe"},
+		{"WorkerW", "explorer.exe"},
+		{"Shell_TrayWnd", ""},
+		{"Shell_SecondaryTrayWnd", ""},
+		{"Windows.UI.Core.CoreWindow", "SearchHost.exe"},
+		{"XamlExplorerHostIslandWindow", ""},
+		{"TopLevelWindowForOverflowXamlIsland", ""},
+		{"MultitaskingViewFrame", ""},
+		{"TaskSwitcherWnd", ""},
+		{"ForegroundStaging", ""},
+		{"ControlCenterWindow", ""},
+		{"NotificationCenterWindow", ""},
+		{"Shell_InputSwitchTopLevelWindow", ""},
+		{"NotifyIconOverflowWindow", ""},
+		{"TaskListThumbnailWnd", ""},
+		{"WinUIDesktopWin32WindowClass", ""},
+		{"Windows.UI.Composition.DesktopWindowContentBridge", ""},
+		{"Windows.UI.Input.InputSite.WindowClass", ""},
+		{"UnknownClass", "StartMenuExperienceHost.exe"},
+		{"UnknownClass", "ShellExperienceHost.exe"},
+		{"UnknownClass", "ShellHost.exe"},
+		{"UnknownClass", "Explorer.EXE"},
+		{"UnknownClass", "Widgets.exe"},
+		{"UnknownClass", "WidgetBoard.exe"},
+	}
+	for _, tc := range shellCases {
+		if !isShellOrFlyoutWindow(tc.className, tc.exeName) {
+			t.Fatalf("isShellOrFlyoutWindow(%q, %q) = false, want true", tc.className, tc.exeName)
+		}
+	}
+
+	appCases := []struct {
+		className string
+		exeName   string
+	}{
+		{"Chrome_WidgetWin_1", "chrome.exe"},
+		{"MozillaWindowClass", "firefox.exe"},
+		{"Qt5QWindowIcon", "vlc.exe"},
+		{"ApplicationFrameWindow", "applicationframehost.exe"},
+		{"UnrealWindow", "game.exe"},
+	}
+	for _, tc := range appCases {
+		if isShellOrFlyoutWindow(tc.className, tc.exeName) {
+			t.Fatalf("isShellOrFlyoutWindow(%q, %q) = true, want false", tc.className, tc.exeName)
+		}
+	}
+}
+
+func TestComputeOverlayBoundsVisibility(t *testing.T) {
+	mon := rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
+	tb := rect{Left: 0, Top: 1032, Right: 1920, Bottom: 1080}
+	tray := rect{Left: 1700, Top: 1032, Right: 1912, Bottom: 1080}
+
+	base := TaskbarInfo{
+		Valid:       true,
+		TaskbarHWND: 0x1234,
+		MonitorRect: mon,
+		TaskbarRect: tb,
+		TrayRect:    tray,
+		DPI:         96,
+	}
+
+	x, y, ok := ComputeOverlayBounds(base, 140, 36)
+	if !ok {
+		t.Fatal("ComputeOverlayBounds should show overlay on normal desktop taskbar")
+	}
+	if x+140 > tray.Left {
+		t.Fatalf("overlay right %d overlaps tray left %d", x+140, tray.Left)
+	}
+	if y < tb.Top || y+36 > tb.Bottom {
+		t.Fatalf("overlay Y [%d,%d] outside taskbar [%d,%d]", y, y+36, tb.Top, tb.Bottom)
+	}
+
+	fullscreen := base
+	fullscreen.FullscreenBlocking = true
+	if _, _, ok := ComputeOverlayBounds(fullscreen, 140, 36); ok {
+		t.Fatal("ComputeOverlayBounds should hide overlay when FullscreenBlocking is true")
+	}
+
+	hiddenTaskbar := base
+	hiddenTaskbar.AutoHide = true
+	hiddenTaskbar.TaskbarHidden = true
+	if _, _, ok := ComputeOverlayBounds(hiddenTaskbar, 140, 36); ok {
+		t.Fatal("ComputeOverlayBounds should hide overlay when TaskbarHidden is true")
+	}
+
+	invalid := base
+	invalid.Valid = false
+	if _, _, ok := ComputeOverlayBounds(invalid, 140, 36); ok {
+		t.Fatal("ComputeOverlayBounds should hide overlay when Valid is false")
+	}
+}
+
+func TestChildLayeredWindowClientCoordinates(t *testing.T) {
+	hInst := getModuleHandle()
+	staticCls, _ := windows.UTF16PtrFromString("STATIC")
+	title, _ := windows.UTF16PtrFromString("Test")
+
+	parent, _, _ := procCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(staticCls)),
+		uintptr(unsafe.Pointer(title)),
+		uintptr(wsPopup),
+		120, 140, 400, 48,
+		0, 0, hInst, 0,
+	)
+	if parent == 0 {
+		t.Skip("CreateWindowExW parent unavailable in this test station")
+	}
+	defer procDestroyWindow.Call(parent)
+
+	child, _, _ := procCreateWindowExW.Call(
+		uintptr(wsExToolWindow|wsExTopmost|wsExLayered|wsExNoActivate),
+		uintptr(unsafe.Pointer(staticCls)),
+		uintptr(unsafe.Pointer(title)),
+		uintptr(wsPopup),
+		0, 0, 120, 40,
+		0, 0, hInst, 0,
+	)
+	if child == 0 {
+		t.Fatalf("CreateWindowExW child failed")
+	}
+	defer procDestroyWindow.Call(child)
+
+	setWindowStyle(child, (getWindowStyle(child)&^wsPopup)|wsChild|wsClipSiblings)
+	setWindowExStyle(child, getWindowExStyle(child)&^wsExTopmost)
+	_, _, _ = procSetParent.Call(child, parent)
+	if gotParent := getParentWindow(child); gotParent != parent {
+		t.Fatalf("GetParent = 0x%x, want 0x%x", gotParent, parent)
+	}
+
+	cx, cy, ok := screenToClientPoint(parent, 170, 144)
+	if !ok || cx != 50 || cy != 4 {
+		t.Fatalf("screenToClientPoint(170,144) = (%d,%d,ok=%v), want (50,4,true)", cx, cy, ok)
+	}
+
+	_, _, _ = procSetWindowPos.Call(child, hwndTop, uintptr(cx), uintptr(cy), 120, 40, swpNoActivate|swpFrameChanged)
+	r, rOK := getWindowRect(child)
+	if !rOK || r.Left != 170 || r.Top != 144 || r.Right != 290 || r.Bottom != 184 {
+		t.Fatalf("child rect = %+v (ok=%v), want {170 144 290 184}", r, rOK)
 	}
 }

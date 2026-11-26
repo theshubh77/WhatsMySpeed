@@ -1,12 +1,17 @@
 package ui
 
 import (
+	"strings"
+	"unsafe"
+
 	"golang.org/x/sys/windows"
 )
 
 const (
-	wsPopup       = 0x80000000
-	wsOverlapped  = 0x00000000
+	wsPopup        = 0x80000000
+	wsChild        = 0x40000000
+	wsClipSiblings = 0x04000000
+	wsOverlapped   = 0x00000000
 	wsCaption     = 0x00C00000
 	wsSysMenu     = 0x00080000
 	wsMinimizeBox = 0x00020000
@@ -43,6 +48,7 @@ const (
 
 	wmTrayCallback    = wmApp + 1
 	wmSpeedTestUpdate = wmApp + 2
+	wmSyncOverlay     = wmApp + 3
 
 	swHide         = 0
 	swShowNormal   = 1
@@ -52,12 +58,18 @@ const (
 	iconSmall = 0
 	iconBig   = 1
 
-	hwndTopmost   = ^uintptr(0) // (HWND)-1
-	swpNoSize     = 0x0001
-	swpNoMove     = 0x0002
-	swpNoZOrder   = 0x0004
-	swpNoActivate = 0x0010
+	hwndTop         = uintptr(0)  // (HWND)0
+	hwndTopmost     = ^uintptr(0) // (HWND)-1
+	hwndNoTopmost   = ^uintptr(1) // (HWND)-2
+	swpNoSize       = 0x0001
+	swpNoMove       = 0x0002
+	swpNoZOrder     = 0x0004
+	swpNoActivate   = 0x0010
 	swpFrameChanged = 0x0020
+	swpShowWindow   = 0x0040
+
+	gwlStyle   = ^uintptr(15) // GWL_STYLE (-16)
+	gwlExStyle = ^uintptr(19) // GWL_EXSTYLE (-20)
 
 	gwHwndNext = 2
 
@@ -82,8 +94,23 @@ const (
 	abmGetState = 0x00000004
 	absAutohide = 0x00000001
 
+	dwmwaExtendedFrameBounds  = 9
 	dwmwaCloaked              = 14
 	dwmwaUseImmersiveDarkMode = 20
+
+	qunsBusy                 = 2
+	qunsRunningD3DFullScreen = 3
+	qunsPresentationMode     = 4
+
+	winEventOutOfContext   = 0x0000
+	winEventSkipOwnProcess = 0x0002
+
+	eventSystemForeground     = 0x0003
+	eventSystemCaptureStart   = 0x0008
+	eventSystemCaptureEnd     = 0x0009
+	eventObjectReorder        = 0x8004
+	eventObjectLocationChange = 0x800B
+	objidWindow               = 0
 
 	nimAdd        = 0x00000000
 	nimModify     = 0x00000001
@@ -164,6 +191,14 @@ var (
 	procSetForegroundWindow          = modUser32.NewProc("SetForegroundWindow")
 	procGetTopWindow                 = modUser32.NewProc("GetTopWindow")
 	procGetWindow                    = modUser32.NewProc("GetWindow")
+	procSetParent                    = modUser32.NewProc("SetParent")
+	procGetParent                    = modUser32.NewProc("GetParent")
+	procScreenToClient               = modUser32.NewProc("ScreenToClient")
+	procGetWindowLongW               = modUser32.NewProc("GetWindowLongW")
+	procSetWindowLongW               = modUser32.NewProc("SetWindowLongW")
+	procGetWindowThreadProcessId     = modUser32.NewProc("GetWindowThreadProcessId")
+	procSetWinEventHook              = modUser32.NewProc("SetWinEventHook")
+	procUnhookWinEvent               = modUser32.NewProc("UnhookWinEvent")
 	procMonitorFromWindow            = modUser32.NewProc("MonitorFromWindow")
 	procGetMonitorInfoW              = modUser32.NewProc("GetMonitorInfoW")
 	procGetDpiForWindow              = modUser32.NewProc("GetDpiForWindow")
@@ -193,9 +228,10 @@ var (
 	procDeleteObject       = modGdi32.NewProc("DeleteObject")
 	procBitBlt             = modGdi32.NewProc("BitBlt")
 
-	procShellNotifyIconW = modShell32.NewProc("Shell_NotifyIconW")
-	procSHAppBarMessage  = modShell32.NewProc("SHAppBarMessage")
-	procShellExecuteW    = modShell32.NewProc("ShellExecuteW")
+	procShellNotifyIconW             = modShell32.NewProc("Shell_NotifyIconW")
+	procSHAppBarMessage              = modShell32.NewProc("SHAppBarMessage")
+	procSHQueryUserNotificationState = modShell32.NewProc("SHQueryUserNotificationState")
+	procShellExecuteW                = modShell32.NewProc("ShellExecuteW")
 
 	procDwmGetWindowAttribute = modDwmapi.NewProc("DwmGetWindowAttribute")
 	procDwmSetWindowAttribute = modDwmapi.NewProc("DwmSetWindowAttribute")
@@ -444,3 +480,168 @@ func copyUTF16Fixed(dst []uint16, s string) {
 }
 
 func loWord(v uintptr) uint16 { return uint16(v & 0xFFFF) }
+
+func isWindowActuallyVisible(hwnd uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+	v, _, _ := procIsWindowVisible.Call(hwnd)
+	return v != 0
+}
+
+func getWindowStyle(hwnd uintptr) uint32 {
+	if hwnd == 0 {
+		return 0
+	}
+	v, _, _ := procGetWindowLongW.Call(hwnd, gwlStyle)
+	return uint32(v)
+}
+
+func getWindowExStyle(hwnd uintptr) uint32 {
+	if hwnd == 0 {
+		return 0
+	}
+	v, _, _ := procGetWindowLongW.Call(hwnd, gwlExStyle)
+	return uint32(v)
+}
+
+func setWindowStyle(hwnd uintptr, style uint32) {
+	if hwnd != 0 {
+		_, _, _ = procSetWindowLongW.Call(hwnd, gwlStyle, uintptr(style))
+	}
+}
+
+func setWindowExStyle(hwnd uintptr, exStyle uint32) {
+	if hwnd != 0 {
+		_, _, _ = procSetWindowLongW.Call(hwnd, gwlExStyle, uintptr(exStyle))
+	}
+}
+
+func getParentWindow(hwnd uintptr) uintptr {
+	if hwnd == 0 {
+		return 0
+	}
+	p, _, _ := procGetParent.Call(hwnd)
+	return p
+}
+
+func getTopChildWindow(parent uintptr) uintptr {
+	if parent == 0 {
+		return 0
+	}
+	c, _, _ := procGetTopWindow.Call(parent)
+	return c
+}
+
+func screenToClientPoint(parent uintptr, x, y int32) (int32, int32, bool) {
+	if parent == 0 {
+		return x, y, false
+	}
+	pt := point{X: x, Y: y}
+	ok, _, _ := procScreenToClient.Call(parent, uintptr(unsafe.Pointer(&pt)))
+	return pt.X, pt.Y, ok != 0
+}
+
+func getWindowProcessID(hwnd uintptr) uint32 {
+	if hwnd == 0 {
+		return 0
+	}
+	var pid uint32
+	_, _, _ = procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	return pid
+}
+
+func getProcessExeName(pid uint32) string {
+	if pid == 0 {
+		return ""
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return ""
+	}
+	defer windows.CloseHandle(h)
+
+	var buf [512]uint16
+	size := uint32(len(buf))
+	if err := windows.QueryFullProcessImageName(h, 0, &buf[0], &size); err != nil || size == 0 {
+		return ""
+	}
+	full := windows.UTF16ToString(buf[:size])
+	if idx := strings.LastIndexAny(full, `\/`); idx >= 0 {
+		full = full[idx+1:]
+	}
+	return strings.ToLower(full)
+}
+
+func getWindowVisibleBounds(hwnd uintptr) (rect, bool) {
+	if hwnd == 0 {
+		return rect{}, false
+	}
+	if procDwmGetWindowAttribute.Find() == nil {
+		var r rect
+		hr, _, _ := procDwmGetWindowAttribute.Call(
+			hwnd,
+			dwmwaExtendedFrameBounds,
+			uintptr(unsafe.Pointer(&r)),
+			unsafe.Sizeof(r),
+		)
+		if hr == 0 && !r.Empty() {
+			return r, true
+		}
+	}
+	return getWindowRect(hwnd)
+}
+
+func queryUserNotificationState() (uint32, bool) {
+	if procSHQueryUserNotificationState.Find() != nil {
+		return 0, false
+	}
+	var state uint32
+	hr, _, _ := procSHQueryUserNotificationState.Call(uintptr(unsafe.Pointer(&state)))
+	if hr != 0 {
+		return 0, false
+	}
+	return state, true
+}
+
+// isShellOrFlyoutWindow reports whether a window belongs to the Windows desktop,
+// taskbar, Alt+Tab switcher, Start/Search, tray overflow, or shell flyouts that
+// should never hide the taskbar speed meter.
+func isShellOrFlyoutWindow(className, exeName string) bool {
+	switch className {
+	case "Progman",
+		"WorkerW",
+		"Shell_TrayWnd",
+		"Shell_SecondaryTrayWnd",
+		"Windows.UI.Core.CoreWindow",
+		"XamlExplorerHostIslandWindow",
+		"TopLevelWindowForOverflowXamlIsland",
+		"ControlCenterWindow",
+		"NotificationCenterWindow",
+		"Shell_InputSwitchTopLevelWindow",
+		"MultitaskingViewFrame",
+		"TaskSwitcherWnd",
+		"ForegroundStaging",
+		"NotifyIconOverflowWindow",
+		"TaskListThumbnailWnd",
+		"WinUIDesktopWin32WindowClass",
+		"Windows.UI.Composition.DesktopWindowContentBridge",
+		"Windows.UI.Input.InputSite.WindowClass":
+		return true
+	}
+
+	switch strings.ToLower(exeName) {
+	case "explorer.exe",
+		"startmenuexperiencehost.exe",
+		"searchhost.exe",
+		"searchapp.exe",
+		"shellexperiencehost.exe",
+		"shellhost.exe",
+		"textinputhost.exe",
+		"lockapp.exe",
+		"widgets.exe",
+		"widgetboard.exe":
+		return true
+	}
+	return false
+}

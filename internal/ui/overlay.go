@@ -5,6 +5,7 @@ import (
 	"math"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/WhatsMySpeed/WhatsMySpeed/assets"
@@ -14,9 +15,14 @@ import (
 )
 
 const (
+	hostClassName    = "WhatsMySpeedHostWindow"
 	overlayClassName = "WhatsMySpeedOverlayWindow"
 	timerSampleID    = 1
+	timerZOrderID    = 2
+	timerReassertID  = 3
 	sampleIntervalMs = 1000
+	zOrderIntervalMs = 200
+	reassertDelayMs  = 50
 )
 
 type layoutMetrics struct {
@@ -45,7 +51,11 @@ type App struct {
 
 	gdipToken         uintptr
 	fontFamily        string
+	hostHWND          uintptr
 	hwnd              uintptr
+	attachedParent    uintptr
+	userClosing       bool
+	wndProcCB         uintptr
 	wmTaskbarCreated  uint32
 	tray              *TrayManager
 	settings          *SettingsWindow
@@ -58,9 +68,18 @@ type App struct {
 	isVisible         bool
 	lastX             int32
 	lastY             int32
+	lastPaintX        int32
+	lastPaintY        int32
 	lastW             int32
 	lastH             int32
 	hasPos            bool
+
+	winEventCB     uintptr
+	foregroundHook uintptr
+	explorerHook   uintptr
+	explorerPID    uint32
+	taskbarHWND    uintptr
+	syncPending    atomic.Bool
 
 	metrics layoutMetrics
 
@@ -129,12 +148,16 @@ func (a *App) Run() error {
 		activeAppMu.Unlock()
 	}()
 
+	if err := a.createHostWindow(); err != nil {
+		return err
+	}
 	if err := a.createWindow(); err != nil {
+		_, _, _ = procDestroyWindow.Call(a.hostHWND)
 		return err
 	}
 	defer a.cleanupResources()
 
-	a.tray = NewTrayManager(a.hwnd)
+	a.tray = NewTrayManager(a.hostHWND)
 	defer a.tray.Remove()
 
 	a.settings = NewSettingsWindow(a)
@@ -148,8 +171,14 @@ func (a *App) Run() error {
 	}
 	a.renderAndPosition()
 
-	_, _, _ = procSetTimer.Call(a.hwnd, timerSampleID, sampleIntervalMs, 0)
-	defer procKillTimer.Call(a.hwnd, timerSampleID)
+	a.ensureWinEventHooks(a.taskbarHWND)
+	defer a.uninstallWinEventHooks()
+
+	_, _, _ = procSetTimer.Call(a.hostHWND, timerSampleID, sampleIntervalMs, 0)
+	defer procKillTimer.Call(a.hostHWND, timerSampleID)
+	_, _, _ = procSetTimer.Call(a.hostHWND, timerZOrderID, zOrderIntervalMs, 0)
+	defer procKillTimer.Call(a.hostHWND, timerZOrderID)
+	defer procKillTimer.Call(a.hostHWND, timerReassertID)
 
 	var m msg
 	for {
@@ -160,6 +189,47 @@ func (a *App) Run() error {
 		_, _, _ = procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
 		_, _, _ = procDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
 	}
+	return nil
+}
+
+func (a *App) ensureWndProcCallback() uintptr {
+	if a.wndProcCB == 0 {
+		a.wndProcCB = windows.NewCallback(wndProc)
+	}
+	return a.wndProcCB
+}
+
+func (a *App) createHostWindow() error {
+	hInst := getModuleHandle()
+	clsName, err := windows.UTF16PtrFromString(hostClassName)
+	if err != nil {
+		return err
+	}
+	winTitle, err := windows.UTF16PtrFromString(config.AppName + "Host")
+	if err != nil {
+		return err
+	}
+
+	wcx := wndClassExW{
+		CbSize:        uint32(unsafe.Sizeof(wndClassExW{})),
+		LpfnWndProc:   a.ensureWndProcCallback(),
+		HInstance:     hInst,
+		LpszClassName: clsName,
+	}
+	_, _, _ = procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wcx)))
+
+	hwnd, _, callErr := procCreateWindowExW.Call(
+		uintptr(wsExToolWindow|wsExNoActivate),
+		uintptr(unsafe.Pointer(clsName)),
+		uintptr(unsafe.Pointer(winTitle)),
+		uintptr(wsPopup),
+		0, 0, 0, 0,
+		0, 0, hInst, 0,
+	)
+	if hwnd == 0 {
+		return fmt.Errorf("CreateWindowExW host failed: %w", callErr)
+	}
+	a.hostHWND = hwnd
 	return nil
 }
 
@@ -178,7 +248,7 @@ func (a *App) createWindow() error {
 	wcx := wndClassExW{
 		CbSize:        uint32(unsafe.Sizeof(wndClassExW{})),
 		Style:         csDblClks,
-		LpfnWndProc:   windows.NewCallback(wndProc),
+		LpfnWndProc:   a.ensureWndProcCallback(),
 		HInstance:     hInst,
 		HCursor:       hCursor,
 		LpszClassName: clsName,
@@ -200,7 +270,18 @@ func (a *App) createWindow() error {
 		return fmt.Errorf("CreateWindowExW failed: %w", callErr)
 	}
 	a.hwnd = hwnd
+	a.attachedParent = 0
 	return nil
+}
+
+func (a *App) ensureOverlayWindow() bool {
+	if a.hwnd != 0 {
+		return true
+	}
+	if err := a.createWindow(); err != nil {
+		return false
+	}
+	return a.hwnd != 0
 }
 
 func wndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
@@ -208,14 +289,14 @@ func wndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 	app := activeApp
 	activeAppMu.Unlock()
 
-	if app == nil || app.hwnd != hwnd {
+	if app == nil || (app.hwnd != hwnd && app.hostHWND != hwnd) {
 		ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(message), wParam, lParam)
 		return ret
 	}
-	return app.handleMessage(message, wParam, lParam)
+	return app.handleMessage(hwnd, message, wParam, lParam)
 }
 
-func (a *App) handleMessage(message uint32, wParam, lParam uintptr) uintptr {
+func (a *App) handleMessage(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 	if a.wmTaskbarCreated != 0 && message == a.wmTaskbarCreated {
 		a.refreshEnvironment(true)
 		a.renderAndPosition()
@@ -224,9 +305,21 @@ func (a *App) handleMessage(message uint32, wParam, lParam uintptr) uintptr {
 
 	switch message {
 	case wmTimer:
-		if wParam == timerSampleID {
+		switch wParam {
+		case timerSampleID:
 			a.onSampleTick()
+		case timerZOrderID:
+			a.syncPositionAndZOrder()
+		case timerReassertID:
+			_, _, _ = procKillTimer.Call(a.hostHWND, timerReassertID)
+			a.syncPositionAndZOrder()
 		}
+		return 0
+
+	case wmSyncOverlay:
+		a.syncPending.Store(false)
+		a.syncPositionAndZOrder()
+		_, _, _ = procSetTimer.Call(a.hostHWND, timerReassertID, reassertDelayMs, 0)
 		return 0
 
 	case wmMouseMove:
@@ -234,7 +327,7 @@ func (a *App) handleMessage(message uint32, wParam, lParam uintptr) uintptr {
 			a.isHovered = true
 			a.paintLayered()
 		}
-		if !a.trackingLeave {
+		if !a.trackingLeave && a.hwnd != 0 {
 			tme := trackMouseEventStruct{
 				CbSize:    uint32(unsafe.Sizeof(trackMouseEventStruct{})),
 				DwFlags:   tmeLeave,
@@ -277,18 +370,38 @@ func (a *App) handleMessage(message uint32, wParam, lParam uintptr) uintptr {
 		return 0
 
 	case wmClose:
+		a.userClosing = true
 		if a.settings != nil {
 			a.settings.CancelSpeedTest()
 		}
-		_, _, _ = procDestroyWindow.Call(a.hwnd)
+		if a.hwnd != 0 {
+			_, _, _ = procDestroyWindow.Call(a.hwnd)
+		}
+		if a.hostHWND != 0 {
+			_, _, _ = procDestroyWindow.Call(a.hostHWND)
+		}
 		return 0
 
 	case wmDestroy:
-		_, _, _ = procPostQuitMessage.Call(0)
-		return 0
+		if hwnd == a.hwnd {
+			a.hwnd = 0
+			a.attachedParent = 0
+			a.isVisible = false
+			a.hasPos = false
+			a.trackingLeave = false
+			if a.userClosing && a.hostHWND == 0 {
+				_, _, _ = procPostQuitMessage.Call(0)
+			}
+			return 0
+		}
+		if hwnd == a.hostHWND {
+			a.hostHWND = 0
+			_, _, _ = procPostQuitMessage.Call(0)
+			return 0
+		}
 	}
 
-	ret, _, _ := procDefWindowProcW.Call(a.hwnd, uintptr(message), wParam, lParam)
+	ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(message), wParam, lParam)
 	return ret
 }
 
@@ -613,41 +726,160 @@ func (a *App) ensureDIB(width, height int32) {
 	a.dibH = height
 }
 
+func (a *App) attachToTaskbar(taskbarHWND uintptr) {
+	if a.hwnd == 0 {
+		return
+	}
+	if taskbarHWND == 0 {
+		if a.attachedParent != 0 {
+			_, _, _ = procSetParent.Call(a.hwnd, 0)
+			setWindowStyle(a.hwnd, (getWindowStyle(a.hwnd)&^wsChild)|wsPopup)
+			setWindowExStyle(a.hwnd, getWindowExStyle(a.hwnd)|wsExTopmost)
+			_, _, _ = procSetWindowPos.Call(
+				a.hwnd,
+				hwndTopmost,
+				0, 0, 0, 0,
+				swpNoMove|swpNoSize|swpNoActivate|swpFrameChanged,
+			)
+			a.attachedParent = 0
+			a.hasPos = false
+		}
+		return
+	}
+	if a.attachedParent == taskbarHWND && getParentWindow(a.hwnd) == taskbarHWND {
+		return
+	}
+
+	// Attach as a layered child of Shell_TrayWnd so the overlay inherits the taskbar's
+	// own DWM Z-order band across Quick Settings (Battery/Speaker/Wi-Fi) and Alt+Tab.
+	setWindowStyle(a.hwnd, (getWindowStyle(a.hwnd)&^wsPopup)|wsChild|wsClipSiblings)
+	setWindowExStyle(a.hwnd, getWindowExStyle(a.hwnd)&^wsExTopmost)
+	_, _, _ = procSetParent.Call(a.hwnd, taskbarHWND)
+	if getParentWindow(a.hwnd) == taskbarHWND {
+		_, _, _ = procSetWindowPos.Call(
+			a.hwnd,
+			hwndTop,
+			0, 0, 0, 0,
+			swpNoMove|swpNoSize|swpNoActivate|swpFrameChanged,
+		)
+		a.attachedParent = taskbarHWND
+		a.hasPos = false
+		return
+	}
+
+	// Fallback cleanly to an independent topmost popup if SetParent is denied.
+	_, _, _ = procSetParent.Call(a.hwnd, 0)
+	setWindowStyle(a.hwnd, (getWindowStyle(a.hwnd)&^wsChild)|wsPopup)
+	setWindowExStyle(a.hwnd, getWindowExStyle(a.hwnd)|wsExTopmost)
+	_, _, _ = procSetWindowPos.Call(
+		a.hwnd,
+		hwndTopmost,
+		0, 0, 0, 0,
+		swpNoMove|swpNoSize|swpNoActivate|swpFrameChanged,
+	)
+	a.attachedParent = 0
+	a.hasPos = false
+}
+
 func (a *App) renderAndPosition() {
+	a.positionOverlay(true)
+}
+
+func (a *App) syncPositionAndZOrder() {
+	a.positionOverlay(false)
+}
+
+func (a *App) positionOverlay(repaint bool) {
 	if a.cfg.DisplayMode == config.ModeHide {
-		if a.isVisible {
+		if a.hwnd != 0 && (a.isVisible || isWindowActuallyVisible(a.hwnd)) {
 			_, _, _ = procShowWindow.Call(a.hwnd, swHide)
 			a.isVisible = false
 		}
+		return
+	}
+
+	if !a.ensureOverlayWindow() {
 		return
 	}
 
 	info := QueryTaskbarInfo()
+	a.ensureWinEventHooks(info.TaskbarHWND)
+	a.taskbarHWND = info.TaskbarHWND
+
 	x, y, shouldShow := ComputeOverlayBounds(info, a.metrics.width, a.metrics.height)
 	if !shouldShow {
-		if a.isVisible {
+		if a.isVisible || isWindowActuallyVisible(a.hwnd) {
 			_, _, _ = procShowWindow.Call(a.hwnd, swHide)
 			a.isVisible = false
 		}
 		return
 	}
 
-	a.paintLayeredAt(x, y)
+	a.attachToTaskbar(info.TaskbarHWND)
 
-	needMove := !a.hasPos ||
-		a.lastX != x ||
-		a.lastY != y ||
-		a.lastW != a.metrics.width ||
-		a.lastH != a.metrics.height ||
-		!isWindowAbove(a.hwnd, info.TaskbarHWND)
-
-	if !a.isVisible {
-		_, _, _ = procShowWindow.Call(a.hwnd, swShowNoActive)
-		a.isVisible = true
-		needMove = true
+	paintX, paintY := x, y
+	zAfter := hwndTopmost
+	aboveTarget := info.TaskbarHWND == 0 || isWindowAbove(a.hwnd, info.TaskbarHWND)
+	if a.attachedParent != 0 {
+		if cx, cy, ok := screenToClientPoint(a.attachedParent, x, y); ok {
+			paintX, paintY = cx, cy
+		} else {
+			paintX = x - info.TaskbarRect.Left
+			paintY = y - info.TaskbarRect.Top
+		}
+		zAfter = hwndTop
+		aboveTarget = getTopChildWindow(a.attachedParent) == a.hwnd
 	}
 
-	if needMove {
+	winVisible := isWindowActuallyVisible(a.hwnd)
+	posChanged := !a.hasPos ||
+		a.lastX != x ||
+		a.lastY != y ||
+		a.lastPaintX != paintX ||
+		a.lastPaintY != paintY ||
+		a.lastW != a.metrics.width ||
+		a.lastH != a.metrics.height
+
+	if repaint || !a.isVisible || !winVisible || posChanged {
+		a.paintLayeredAt(paintX, paintY)
+	}
+
+	if !a.isVisible || !winVisible {
+		_, _, _ = procShowWindow.Call(a.hwnd, swShowNoActive)
+		a.isVisible = true
+		posChanged = true
+	}
+
+	if posChanged {
+		flags := uintptr(swpNoActivate)
+		if !winVisible {
+			flags |= swpShowWindow
+		}
+		_, _, _ = procSetWindowPos.Call(
+			a.hwnd,
+			zAfter,
+			uintptr(paintX),
+			uintptr(paintY),
+			uintptr(a.metrics.width),
+			uintptr(a.metrics.height),
+			flags,
+		)
+	} else if !aboveTarget {
+		_, _, _ = procSetWindowPos.Call(
+			a.hwnd,
+			zAfter,
+			0, 0, 0, 0,
+			swpNoMove|swpNoSize|swpNoActivate,
+		)
+	}
+
+	if a.attachedParent == 0 && (posChanged || !aboveTarget) && info.TaskbarHWND != 0 && !isWindowAbove(a.hwnd, info.TaskbarHWND) {
+		_, _, _ = procSetWindowPos.Call(
+			a.hwnd,
+			hwndNoTopmost,
+			0, 0, 0, 0,
+			swpNoMove|swpNoSize|swpNoActivate,
+		)
 		_, _, _ = procSetWindowPos.Call(
 			a.hwnd,
 			hwndTopmost,
@@ -655,22 +887,105 @@ func (a *App) renderAndPosition() {
 			uintptr(y),
 			uintptr(a.metrics.width),
 			uintptr(a.metrics.height),
-			swpNoActivate,
+			swpNoActivate|swpShowWindow,
 		)
 	}
 
 	a.lastX = x
 	a.lastY = y
+	a.lastPaintX = paintX
+	a.lastPaintY = paintY
 	a.lastW = a.metrics.width
 	a.lastH = a.metrics.height
 	a.hasPos = true
 }
 
-func (a *App) paintLayered() {
-	if !a.isVisible || a.cfg.DisplayMode == config.ModeHide {
+func winEventProc(hWinEventHook, event, hwnd, idObject, idChild, idEventThread, dwmsEventTime uintptr) uintptr {
+	activeAppMu.Lock()
+	app := activeApp
+	activeAppMu.Unlock()
+	if app == nil || app.hostHWND == 0 {
+		return 0
+	}
+
+	ev := uint32(event)
+	if ev >= eventObjectReorder {
+		if (ev != eventObjectReorder && ev != eventObjectLocationChange) ||
+			int32(idObject) != objidWindow || int32(idChild) != 0 {
+			return 0
+		}
+		if ev == eventObjectLocationChange && app.taskbarHWND != 0 && hwnd != app.taskbarHWND {
+			return 0
+		}
+	}
+
+	if app.syncPending.CompareAndSwap(false, true) {
+		_, _, _ = procPostMessageW.Call(app.hostHWND, wmSyncOverlay, 0, 0)
+	}
+	return 0
+}
+
+func (a *App) ensureWinEventHooks(taskbarHWND uintptr) {
+	if procSetWinEventHook.Find() != nil {
 		return
 	}
-	a.paintLayeredAt(a.lastX, a.lastY)
+	if a.winEventCB == 0 {
+		a.winEventCB = windows.NewCallback(winEventProc)
+	}
+
+	flags := uintptr(winEventOutOfContext | winEventSkipOwnProcess)
+	if a.foregroundHook == 0 {
+		h, _, _ := procSetWinEventHook.Call(
+			eventSystemForeground,
+			eventSystemCaptureEnd,
+			0,
+			a.winEventCB,
+			0,
+			0,
+			flags,
+		)
+		a.foregroundHook = h
+	}
+
+	if taskbarHWND != 0 && (a.explorerHook == 0 || taskbarHWND != a.taskbarHWND) {
+		pid := getWindowProcessID(taskbarHWND)
+		if pid != 0 && (a.explorerHook == 0 || pid != a.explorerPID) {
+			if a.explorerHook != 0 {
+				_, _, _ = procUnhookWinEvent.Call(a.explorerHook)
+				a.explorerHook = 0
+			}
+			h, _, _ := procSetWinEventHook.Call(
+				eventObjectReorder,
+				eventObjectLocationChange,
+				0,
+				a.winEventCB,
+				uintptr(pid),
+				0,
+				flags,
+			)
+			a.explorerHook = h
+			a.explorerPID = pid
+		}
+	}
+}
+
+func (a *App) uninstallWinEventHooks() {
+	if a.foregroundHook != 0 {
+		_, _, _ = procUnhookWinEvent.Call(a.foregroundHook)
+		a.foregroundHook = 0
+	}
+	if a.explorerHook != 0 {
+		_, _, _ = procUnhookWinEvent.Call(a.explorerHook)
+		a.explorerHook = 0
+	}
+	a.explorerPID = 0
+}
+
+func (a *App) paintLayered() {
+	if a.hwnd == 0 || !a.isVisible || a.cfg.DisplayMode == config.ModeHide {
+		return
+	}
+	a.paintLayeredAt(a.lastPaintX, a.lastPaintY)
 }
 
 func (a *App) paintLayeredAt(x, y int32) {
@@ -876,7 +1191,11 @@ func (a *App) openContextMenu() {
 		}
 		return
 	case cmdExit:
-		_, _, _ = procPostMessageW.Call(a.hwnd, wmClose, 0, 0)
+		target := a.hostHWND
+		if target == 0 {
+			target = a.hwnd
+		}
+		_, _, _ = procPostMessageW.Call(target, wmClose, 0, 0)
 		return
 	default:
 		return

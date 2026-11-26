@@ -97,9 +97,14 @@ func isFullscreenWindowOnMonitor(hMon uintptr, monRect rect, taskbarHWND uintptr
 		return false
 	}
 
+	pid := getWindowProcessID(fg)
+	if pid != 0 && pid == windows.GetCurrentProcessId() {
+		return false
+	}
+
 	cls := getWindowClassName(fg)
-	switch cls {
-	case "Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd":
+	exe := getProcessExeName(pid)
+	if isShellOrFlyoutWindow(cls, exe) {
 		return false
 	}
 
@@ -108,14 +113,27 @@ func isFullscreenWindowOnMonitor(hMon uintptr, monRect rect, taskbarHWND uintptr
 		return false
 	}
 
-	fgRect, ok := getWindowRect(fg)
+	if quns, ok := queryUserNotificationState(); ok {
+		if quns == qunsRunningD3DFullScreen || quns == qunsPresentationMode {
+			return true
+		}
+	}
+
+	fgRect, ok := getWindowVisibleBounds(fg)
 	if !ok {
 		return false
 	}
-	return fgRect.Left <= monRect.Left &&
-		fgRect.Top <= monRect.Top &&
-		fgRect.Right >= monRect.Right &&
-		fgRect.Bottom >= monRect.Bottom
+	if fgRect.Left > monRect.Left || fgRect.Top > monRect.Top ||
+		fgRect.Right < monRect.Right || fgRect.Bottom < monRect.Bottom {
+		return false
+	}
+
+	style := getWindowStyle(fg)
+	if (style & wsCaption) == wsCaption {
+		quns, ok := queryUserNotificationState()
+		return ok && quns == qunsBusy
+	}
+	return true
 }
 
 // QueryTaskbarInfo reads live Shell_TrayWnd and TrayNotifyWnd bounds from Win32.
