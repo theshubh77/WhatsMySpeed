@@ -45,6 +45,8 @@ var (
 	procGdipCreateFontFromLogfontW    = modGdiplus.NewProc("GdipCreateFontFromLogfontW")
 	procGdipDeleteFont                = modGdiplus.NewProc("GdipDeleteFont")
 	procGdipCreateStringFormat        = modGdiplus.NewProc("GdipCreateStringFormat")
+	procGdipStringFormatGetGenericTypographic = modGdiplus.NewProc("GdipStringFormatGetGenericTypographic")
+	procGdipCloneStringFormat         = modGdiplus.NewProc("GdipCloneStringFormat")
 	procGdipDeleteStringFormat        = modGdiplus.NewProc("GdipDeleteStringFormat")
 	procGdipSetStringFormatAlign      = modGdiplus.NewProc("GdipSetStringFormatAlign")
 	procGdipSetStringFormatLineAlign  = modGdiplus.NewProc("GdipSetStringFormatLineAlign")
@@ -207,6 +209,28 @@ func gpCreateStringFormat(hAlign, vAlign int32) (uintptr, error) {
 	_, _, _ = procGdipSetStringFormatFlags.Call(
 		fmtHandle,
 		uintptr(gpStringFormatFlagsNoWrap|gpStringFormatFlagsNoClip),
+	)
+	return fmtHandle, nil
+}
+
+// gpCreateTypographicStringFormat clones GDI+ GenericTypographic so text measurements and draws
+// have zero leading/trailing overhang padding for tight inline icon+text runs.
+func gpCreateTypographicStringFormat(hAlign, vAlign int32) (uintptr, error) {
+	var baseFmt uintptr
+	status, _, _ := procGdipStringFormatGetGenericTypographic.Call(uintptr(unsafe.Pointer(&baseFmt)))
+	if status != 0 || baseFmt == 0 {
+		return gpCreateStringFormat(hAlign, vAlign)
+	}
+	var fmtHandle uintptr
+	status, _, _ = procGdipCloneStringFormat.Call(baseFmt, uintptr(unsafe.Pointer(&fmtHandle)))
+	if status != 0 || fmtHandle == 0 {
+		return gpCreateStringFormat(hAlign, vAlign)
+	}
+	_, _, _ = procGdipSetStringFormatAlign.Call(fmtHandle, uintptr(hAlign))
+	_, _, _ = procGdipSetStringFormatLineAlign.Call(fmtHandle, uintptr(vAlign))
+	_, _, _ = procGdipSetStringFormatFlags.Call(
+		fmtHandle,
+		uintptr(0x00000004|0x00001000|0x00002000|0x00004000), // NoFitBlackBox | NoWrap | LineLimit | NoClip
 	)
 	return fmtHandle, nil
 }

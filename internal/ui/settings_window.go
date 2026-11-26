@@ -17,9 +17,10 @@ const (
 	settingsClassName = "WhatsMySpeedDashboardWindow"
 	sponsorURL        = "https://github.com/sponsors/theshubh77"
 	repoURL           = "https://github.com/theshubh77/WhatsMySpeed"
+	linkedinURL       = "https://www.linkedin.com/in/theshubh77"
 
 	baseWindowW = 626
-	baseWindowH = 718
+	baseWindowH = 756
 )
 
 type controlAction int
@@ -46,6 +47,7 @@ const (
 	actAutoStart
 	actGitHub
 	actSponsor
+	actLinkedIn
 )
 
 type uiControl struct {
@@ -64,6 +66,7 @@ type dashboardPalette struct {
 	windowBG    uint32
 	cardBG      uint32
 	cardBorder  uint32
+	faintBorder uint32
 	pillBG      uint32
 	pillHoverBG uint32
 	brandCyan   uint32
@@ -87,6 +90,7 @@ func getDashboardPalette(isLight bool) dashboardPalette {
 			windowBG:    0xFFF4F7FA,
 			cardBG:      0xFFFFFFFF,
 			cardBorder:  0xFFE2E8F0,
+			faintBorder: 0x180F172A,
 			pillBG:      0xFFEDF2F7,
 			pillHoverBG: 0xFFE2E8F0,
 			brandCyan:   0xFF0891B2,
@@ -109,6 +113,7 @@ func getDashboardPalette(isLight bool) dashboardPalette {
 		windowBG:    0xFF0B0F19,
 		cardBG:      0xFF121826,
 		cardBorder:  0xFF1E293B,
+		faintBorder: 0x16FFFFFF,
 		pillBG:      0xFF1A2233,
 		pillHoverBG: 0xFF232E45,
 		brandCyan:   0xFF22D3EE,
@@ -154,6 +159,7 @@ type SettingsWindow struct {
 	fontTitle      uintptr
 	fontBody       uintptr
 	fontSmall      uintptr
+	fontCaption    uintptr
 	fontCaps       uintptr
 	fontGaugeHero  uintptr
 	fontGaugeUnit  uintptr
@@ -176,6 +182,16 @@ type SettingsWindow struct {
 	githubBuf      []byte
 	heartBmp       uintptr
 	heartBuf       []byte
+	madeHeartBmp   uintptr
+	madeHeartBuf   []byte
+	dlSmallBmp     uintptr
+	dlSmallBuf     []byte
+	ulSmallBmp     uintptr
+	ulSmallBuf     []byte
+	dlMetricBmp    uintptr
+	dlMetricBuf    []byte
+	ulMetricBmp    uintptr
+	ulMetricBuf    []byte
 	resDPI         uint32
 	resLight       bool
 
@@ -562,6 +578,9 @@ func (w *SettingsWindow) handleAction(act controlAction) {
 	case actSponsor:
 		openExternalURL(w.hwnd, sponsorURL)
 		return
+	case actLinkedIn:
+		openExternalURL(w.hwnd, linkedinURL)
+		return
 	default:
 		return
 	}
@@ -634,6 +653,7 @@ func (w *SettingsWindow) ensureDrawResources(dpi uint32, isLight bool) {
 		w.fontTitle, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(24, dpi), 700)
 		w.fontBody, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(15, dpi), 600)
 		w.fontSmall, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(14, dpi), 600)
+		w.fontCaption, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(15, dpi), 500)
 		w.fontCaps, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(13, dpi), 700)
 		w.fontGaugeHero, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(52, dpi), 700)
 		w.fontGaugeUnit, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(16, dpi), 600)
@@ -659,6 +679,16 @@ func (w *SettingsWindow) ensureDrawResources(dpi uint32, isLight bool) {
 		w.githubBmp, w.githubBuf, _ = RasterizeSVGToBitmap(assets.IconGitHubLogoBold, ghPx, ghPx, pal.textPrimary)
 		htPx := scaleDPIInt(17, dpi)
 		w.heartBmp, w.heartBuf, _ = RasterizeSVGToBitmap(assets.IconHeartBold, htPx, htPx, pal.heartPink)
+		mhPx := scaleDPIInt(19, dpi)
+		w.madeHeartBmp, w.madeHeartBuf, _ = RasterizeSVGToGradientBitmap(assets.IconHeartFill, mhPx, mhPx, pal.brandCyan, pal.brandLime)
+
+		smallArrowPx := scaleDPIInt(15, dpi)
+		w.dlSmallBmp, w.dlSmallBuf, _ = RasterizeSVGToBitmap(assets.IconArrowDownBold, smallArrowPx, smallArrowPx, pal.brandCyan)
+		w.ulSmallBmp, w.ulSmallBuf, _ = RasterizeSVGToBitmap(assets.IconArrowUpBold, smallArrowPx, smallArrowPx, pal.brandLime)
+
+		metricArrowPx := scaleDPIInt(18, dpi)
+		w.dlMetricBmp, w.dlMetricBuf, _ = RasterizeSVGToBitmap(assets.IconArrowDownBold, metricArrowPx, metricArrowPx, pal.brandCyan)
+		w.ulMetricBmp, w.ulMetricBuf, _ = RasterizeSVGToBitmap(assets.IconArrowUpBold, metricArrowPx, metricArrowPx, pal.brandLime)
 
 		w.resDPI = dpi
 		w.resLight = isLight
@@ -865,6 +895,7 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 
 	fmtNear, _ := gpCreateStringFormat(gpStringAlignmentNear, gpStringAlignmentCenter)
 	fmtCenter, _ := gpCreateStringFormat(gpStringAlignmentCenter, gpStringAlignmentCenter)
+	fmtTypo, _ := gpCreateTypographicStringFormat(gpStringAlignmentNear, gpStringAlignmentCenter)
 	defer func() {
 		if fmtNear != 0 {
 			_, _, _ = procGdipDeleteStringFormat.Call(fmtNear)
@@ -872,10 +903,14 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		if fmtCenter != 0 {
 			_, _, _ = procGdipDeleteStringFormat.Call(fmtCenter)
 		}
+		if fmtTypo != 0 {
+			_, _, _ = procGdipDeleteStringFormat.Call(fmtTypo)
+		}
 	}()
 
 	bCard, _ := gpCreateSolidBrush(pal.cardBG)
 	bBorder, _ := gpCreateSolidBrush(pal.cardBorder)
+	bFaintBorder, _ := gpCreateSolidBrush(pal.faintBorder)
 	bPill, _ := gpCreateSolidBrush(pal.pillBG)
 	bPillHover, _ := gpCreateSolidBrush(pal.pillHoverBG)
 	bCyan, _ := gpCreateSolidBrush(pal.brandCyan)
@@ -890,7 +925,7 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	bSwitchOff, _ := gpCreateSolidBrush(pal.switchOffBG)
 	bKnob, _ := gpCreateSolidBrush(pal.knobARGB)
 	defer func() {
-		for _, b := range []uintptr{bCard, bBorder, bPill, bPillHover, bCyan, bLime, bMint, bText, bMuted, bAccentTxt, bTrack, bTick, bBadge, bSwitchOff, bKnob} {
+		for _, b := range []uintptr{bCard, bBorder, bFaintBorder, bPill, bPillHover, bCyan, bLime, bMint, bText, bMuted, bAccentTxt, bTrack, bTick, bBadge, bSwitchOff, bKnob} {
 			if b != 0 {
 				_, _, _ = procGdipDeleteBrush.Call(b)
 			}
@@ -1026,7 +1061,28 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	}
 
 	// Live speed pill immediately left of the theme switcher
-	liveBadgeW := s(222)
+	drawCenteredIconText := func(bx, by, bw, bh int32, iconBmp uintptr, iconSz, gap int32, font, brush uintptr, text string) {
+		tw, _ := gpMeasureString(gfx, font, fmtTypo, text)
+		textW := int32(math.Ceil(float64(tw)))
+		totalW := textW
+		if iconBmp != 0 {
+			totalW += iconSz + gap
+		}
+		startX := bx + (bw-totalW)/2
+		if startX < bx+s(4) {
+			startX = bx + s(4)
+		}
+		if iconBmp != 0 {
+			iy := by + (bh-iconSz)/2
+			_, _, _ = procGdipDrawImageRectI.Call(gfx, iconBmp, uintptr(startX), uintptr(iy), uintptr(iconSz), uintptr(iconSz))
+			startX += iconSz + gap
+		}
+		gpDrawString(gfx, font, fmtTypo, brush, text, gpRectF{
+			X: float32(startX), Y: float32(by), Width: float32(textW + s(4)), Height: float32(bh),
+		})
+	}
+
+	liveBadgeW := s(228)
 	liveBadgeH := s(38)
 	liveBadgeX := themeCapX - s(10) - liveBadgeW
 	liveBadgeY := themeCapY
@@ -1035,12 +1091,9 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	dlLive := w.app.formatRate(w.app.currentSample.DownloadBytesPerSec).String()
 	ulLive := w.app.formatRate(w.app.currentSample.UploadBytesPerSec).String()
 	halfBadgeW := (liveBadgeW - s(12)) / 2
-	gpDrawString(gfx, w.fontSmall, fmtCenter, bCyan, "↓ "+dlLive, gpRectF{
-		X: float32(liveBadgeX + s(6)), Y: float32(liveBadgeY), Width: float32(halfBadgeW), Height: float32(liveBadgeH),
-	})
-	gpDrawString(gfx, w.fontSmall, fmtCenter, bLime, "↑ "+ulLive, gpRectF{
-		X: float32(liveBadgeX + s(6) + halfBadgeW), Y: float32(liveBadgeY), Width: float32(halfBadgeW), Height: float32(liveBadgeH),
-	})
+	smallArrowSz := s(15)
+	drawCenteredIconText(liveBadgeX+s(6), liveBadgeY, halfBadgeW, liveBadgeH, w.dlSmallBmp, smallArrowSz, s(4), w.fontSmall, bCyan, dlLive)
+	drawCenteredIconText(liveBadgeX+s(6)+halfBadgeW, liveBadgeY, halfBadgeW, liveBadgeH, w.ulSmallBmp, smallArrowSz, s(4), w.fontSmall, bLime, ulLive)
 
 	// 2. Big Speedometer Gauge Card
 	stCardY := s(68)
@@ -1148,29 +1201,35 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	if stProg.PingMs > 0 {
 		pingTxt = fmt.Sprintf("Ping  %.0f ms", stProg.PingMs)
 	}
-	dlTxt := "↓  —"
+	dlTxt := "—"
 	if stProg.DownloadMbps > 0 || stProg.Phase == speedtest.PhaseDone {
-		dlTxt = fmt.Sprintf("↓  %.1f Mbps", stProg.DownloadMbps)
+		dlTxt = fmt.Sprintf("%.1f Mbps", stProg.DownloadMbps)
 	}
-	ulTxt := "↑  —"
+	ulTxt := "—"
 	if stProg.UploadMbps > 0 || stProg.Phase == speedtest.PhaseDone {
-		ulTxt = fmt.Sprintf("↑  %.1f Mbps", stProg.UploadMbps)
+		ulTxt = fmt.Sprintf("%.1f Mbps", stProg.UploadMbps)
 	}
 
+	metricArrowSz := s(18)
 	metricPills := []struct {
-		text  string
-		brush uintptr
+		text    string
+		brush   uintptr
+		iconBmp uintptr
 	}{
-		{pingTxt, bMint},
-		{dlTxt, bCyan},
-		{ulTxt, bLime},
+		{pingTxt, bMint, 0},
+		{dlTxt, bCyan, w.dlMetricBmp},
+		{ulTxt, bLime, w.ulMetricBmp},
 	}
 	for i, mp := range metricPills {
 		px := marginX + metricPad + int32(i)*(metricW+metricGap)
 		gpFillRoundedRect(gfx, bPill, px, metricY, metricW, metricH, metricH/2)
-		gpDrawString(gfx, w.fontPillMetric, fmtCenter, mp.brush, mp.text, gpRectF{
-			X: float32(px + s(4)), Y: float32(metricY), Width: float32(metricW - s(8)), Height: float32(metricH),
-		})
+		if mp.iconBmp != 0 {
+			drawCenteredIconText(px, metricY, metricW, metricH, mp.iconBmp, metricArrowSz, s(6), w.fontPillMetric, mp.brush, mp.text)
+		} else {
+			gpDrawString(gfx, w.fontPillMetric, fmtCenter, mp.brush, mp.text, gpRectF{
+				X: float32(px + s(4)), Y: float32(metricY), Width: float32(metricW - s(8)), Height: float32(metricH),
+			})
+		}
 	}
 
 	btnW := s(200)
@@ -1243,16 +1302,18 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		{action: actUnitBits, label: "Bits/s (Mbps)", selected: cfg.SpeedUnit == config.UnitBits},
 	})
 
-	// 4. Clean Footer Row (Start with Windows + GitHub + Sponsor)
+	// 4. Clean Footer Row (Start with Windows + GitHub + Sponsor, faint divider, and Made with <heart> by Shubham Bhamare)
 	footY := appCardY + appCardH + s(12)
-	footH := s(58)
+	footTopH := s(56)
+	footBotH := s(38)
+	footH := footTopH + footBotH
 	drawCard(marginX, footY, cardW, footH, s(16))
 
 	autoStart, _ := config.IsAutoStartEnabled()
 	swW := s(48)
 	swH := s(26)
 	swX := marginX + s(16)
-	swY := footY + (footH-swH)/2
+	swY := footY + (footTopH-swH)/2
 
 	w.controls = append(w.controls, uiControl{
 		action:   actAutoStart,
@@ -1270,11 +1331,11 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	gpFillRoundedRect(gfx, trackBrush, swX, swY, swW, swH, swH/2)
 	gpFillRoundedRect(gfx, bKnob, knobX, swY+s(3), s(20), s(20), s(10))
 	gpDrawString(gfx, w.fontSmall, fmtNear, bText, "Start with Windows", gpRectF{
-		X: float32(swX + swW + s(12)), Y: float32(footY), Width: float32(s(175)), Height: float32(footH),
+		X: float32(swX + swW + s(12)), Y: float32(footY), Width: float32(s(175)), Height: float32(footTopH),
 	})
 
 	pillFootH := s(38)
-	pillFootY := footY + (footH-pillFootH)/2
+	pillFootY := footY + (footTopH-pillFootH)/2
 
 	spW := s(128)
 	spX := marginX + cardW - s(14) - spW
@@ -1299,6 +1360,63 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	}
 	w.controls = append(w.controls, ghCtrl)
 	drawPill(ghCtrl)
+
+	// Faint footer divider and centered "Made with [gradient heart] by Shubham Bhamare" line
+	divX := marginX + s(16)
+	divY := footY + footTopH
+	divW := cardW - s(32)
+	gpFillRoundedRect(gfx, bFaintBorder, divX, divY, divW, 1, 0)
+
+	partMade := "Made with"
+	partBy := "by"
+	partAuthor := "Shubham Bhamare"
+	wMadeF, _ := gpMeasureString(gfx, w.fontCaption, fmtTypo, partMade)
+	wByF, _ := gpMeasureString(gfx, w.fontCaption, fmtTypo, partBy)
+	wAuthF, _ := gpMeasureString(gfx, w.fontCaption, fmtTypo, partAuthor)
+
+	wMade := int32(math.Ceil(float64(wMadeF)))
+	wBy := int32(math.Ceil(float64(wByF)))
+	wAuth := int32(math.Ceil(float64(wAuthF)))
+	mhSz := s(19)
+	spGap := s(6)
+
+	totalCreditW := wMade + spGap + mhSz + spGap + wBy + spGap + wAuth
+	curX := (width - totalCreditW) / 2
+	creditY := divY + 1
+	creditH := footBotH - 1
+
+	gpDrawString(gfx, w.fontCaption, fmtTypo, bMuted, partMade, gpRectF{
+		X: float32(curX), Y: float32(creditY), Width: float32(wMade + s(4)), Height: float32(creditH),
+	})
+	curX += wMade + spGap
+
+	if w.madeHeartBmp != 0 {
+		hy := creditY + (creditH-mhSz)/2
+		_, _, _ = procGdipDrawImageRectI.Call(gfx, w.madeHeartBmp, uintptr(curX), uintptr(hy), uintptr(mhSz), uintptr(mhSz))
+	}
+	curX += mhSz + spGap
+
+	gpDrawString(gfx, w.fontCaption, fmtTypo, bMuted, partBy, gpRectF{
+		X: float32(curX), Y: float32(creditY), Width: float32(wBy + s(4)), Height: float32(creditH),
+	})
+	curX += wBy + spGap
+
+	linkBounds := rect{Left: curX, Top: creditY, Right: curX + wAuth + s(2), Bottom: creditY + creditH}
+	w.controls = append(w.controls, uiControl{
+		action: actLinkedIn,
+		bounds: linkBounds,
+		label:  partAuthor,
+	})
+	gpDrawString(gfx, w.fontCaption, fmtTypo, bCyan, partAuthor, gpRectF{
+		X: float32(curX), Y: float32(creditY), Width: float32(wAuth + s(4)), Height: float32(creditH),
+	})
+	if w.hoveredAct == actLinkedIn {
+		ulY := creditY + creditH - s(9)
+		gpFillRoundedRect(gfx, bCyan, curX, ulY, wAuth, 1, 0)
+	} else {
+		ulY := creditY + creditH - s(9)
+		gpFillRoundedRect(gfx, bFaintBorder, curX, ulY, wAuth, 1, 0)
+	}
 }
 
 func (w *SettingsWindow) releaseDIB() {
@@ -1325,7 +1443,7 @@ func (w *SettingsWindow) releaseDIB() {
 
 func (w *SettingsWindow) releaseFontAndIconResources() {
 	for _, f := range []*uintptr{
-		&w.fontTitle, &w.fontBody, &w.fontSmall, &w.fontCaps,
+		&w.fontTitle, &w.fontBody, &w.fontSmall, &w.fontCaption, &w.fontCaps,
 		&w.fontGaugeHero, &w.fontGaugeUnit, &w.fontPillMetric,
 	} {
 		if *f != 0 {
@@ -1336,7 +1454,8 @@ func (w *SettingsWindow) releaseFontAndIconResources() {
 	for _, b := range []*uintptr{
 		&w.logoBmp, &w.sunBmp, &w.sunSelBmp,
 		&w.moonBmp, &w.moonSelBmp, &w.monBmp, &w.monSelBmp,
-		&w.githubBmp, &w.heartBmp,
+		&w.githubBmp, &w.heartBmp, &w.madeHeartBmp,
+		&w.dlSmallBmp, &w.ulSmallBmp, &w.dlMetricBmp, &w.ulMetricBmp,
 	} {
 		if *b != 0 {
 			_, _, _ = procGdipDisposeImage.Call(*b)
@@ -1347,7 +1466,9 @@ func (w *SettingsWindow) releaseFontAndIconResources() {
 	w.sunBuf, w.sunSelBuf = nil, nil
 	w.moonBuf, w.moonSelBuf = nil, nil
 	w.monBuf, w.monSelBuf = nil, nil
-	w.githubBuf, w.heartBuf = nil, nil
+	w.githubBuf, w.heartBuf, w.madeHeartBuf = nil, nil, nil
+	w.dlSmallBuf, w.ulSmallBuf = nil, nil
+	w.dlMetricBuf, w.ulMetricBuf = nil, nil
 }
 
 func (w *SettingsWindow) releaseDrawResources() {

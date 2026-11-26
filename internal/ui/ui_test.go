@@ -56,6 +56,7 @@ func TestEmbeddedPhosphorIconsParseAndRasterize(t *testing.T) {
 		assets.IconMonitorBold,
 		assets.IconGitHubLogoBold,
 		assets.IconHeartBold,
+		assets.IconHeartFill,
 	}
 
 	for _, p := range iconPaths {
@@ -86,6 +87,21 @@ func TestEmbeddedPhosphorIconsParseAndRasterize(t *testing.T) {
 		t.Fatalf("CreatePNGHICON failed: %v", err)
 	}
 	_, _, _ = procDestroyIcon.Call(appIcon)
+
+	gradBmp, gradBuf, err := RasterizeSVGToGradientBitmap(assets.IconHeartFill, 20, 20, 0xFF22D3EE, 0xFFA3E635)
+	if err != nil {
+		t.Fatalf("RasterizeSVGToGradientBitmap failed: %v", err)
+	}
+	nonZeroGrad := 0
+	for i := 3; i < len(gradBuf); i += 4 {
+		if gradBuf[i] > 0 {
+			nonZeroGrad++
+		}
+	}
+	_, _, _ = procGdipDisposeImage.Call(gradBmp)
+	if nonZeroGrad == 0 {
+		t.Fatal("RasterizeSVGToGradientBitmap produced empty image")
+	}
 }
 
 func TestResolveTaskbarFontName(t *testing.T) {

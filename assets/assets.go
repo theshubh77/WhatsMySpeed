@@ -28,4 +28,5 @@ const (
 	IconMonitorBold    = "icons/monitor-bold.svg"
 	IconGitHubLogoBold = "icons/github-logo-bold.svg"
 	IconHeartBold      = "icons/heart-bold.svg"
+	IconHeartFill      = "icons/heart-fill.svg"
 )

@@ -705,6 +705,20 @@ func (svg *parsedSVG) buildGpPath(destX, destY, destW, destH int32) (uintptr, er
 // of size width x height with the given ARGB foreground color. Caller owns the bitmap via
 // GdipDisposeImage.
 func RasterizeSVGToBitmap(assetPath string, width, height int32, argb uint32) (uintptr, []byte, error) {
+	return rasterizeSVGWithBrush(assetPath, width, height, func() (uintptr, error) {
+		return gpCreateSolidBrush(argb)
+	})
+}
+
+// RasterizeSVGToGradientBitmap renders an embedded Phosphor SVG into a new GDI+ 32bppPARGB bitmap
+// filled with a diagonal linear gradient from color1 to color2.
+func RasterizeSVGToGradientBitmap(assetPath string, width, height int32, color1, color2 uint32) (uintptr, []byte, error) {
+	return rasterizeSVGWithBrush(assetPath, width, height, func() (uintptr, error) {
+		return gpCreateLinearBrushI(0, 0, width, height, color1, color2)
+	})
+}
+
+func rasterizeSVGWithBrush(assetPath string, width, height int32, makeBrush func() (uintptr, error)) (uintptr, []byte, error) {
 	svg, err := parseEmbeddedSVG(assetPath)
 	if err != nil {
 		return 0, nil, err
@@ -735,7 +749,7 @@ func RasterizeSVGToBitmap(assetPath string, width, height int32, argb uint32) (u
 	_, _, _ = procGdipGraphicsClear.Call(graphics, 0x00000000)
 	_, _, _ = procGdipSetSmoothingMode.Call(graphics, gpSmoothingModeHighQuality)
 
-	brush, err := gpCreateSolidBrush(argb)
+	brush, err := makeBrush()
 	if err != nil {
 		_, _, _ = procGdipDisposeImage.Call(gpBitmap)
 		return 0, nil, err
