@@ -1,0 +1,216 @@
+package ui
+
+import (
+	"testing"
+	"unsafe"
+
+	"github.com/WhatsMySpeed/WhatsMySpeed/assets"
+	"github.com/WhatsMySpeed/WhatsMySpeed/internal/config"
+	"github.com/WhatsMySpeed/WhatsMySpeed/internal/network"
+)
+
+func TestWin32StructSizes(t *testing.T) {
+	if got := unsafe.Sizeof(notifyIconDataW{}); got != 976 {
+		t.Fatalf("sizeof(notifyIconDataW) = %d, want 976", got)
+	}
+	if got := unsafe.Sizeof(logFontW{}); got != 92 {
+		t.Fatalf("sizeof(logFontW) = %d, want 92", got)
+	}
+	if got := unsafe.Sizeof(menuItemInfoW{}); got != 80 {
+		t.Fatalf("sizeof(menuItemInfoW) = %d, want 80", got)
+	}
+	if got := unsafe.Sizeof(trackMouseEventStruct{}); got != 24 {
+		t.Fatalf("sizeof(trackMouseEventStruct) = %d, want 24", got)
+	}
+	if got := unsafe.Sizeof(appBarData{}); got != 48 {
+		t.Fatalf("sizeof(appBarData) = %d, want 48", got)
+	}
+}
+
+func TestEmbeddedPhosphorIconsParseAndRasterize(t *testing.T) {
+	token, err := StartupGDIPlus()
+	if err != nil {
+		t.Fatalf("StartupGDIPlus failed: %v", err)
+	}
+	defer ShutdownGDIPlus(token)
+
+	iconPaths := []string{
+		assets.IconArrowUpBold,
+		assets.IconArrowDownBold,
+		assets.IconGaugeBold,
+		assets.IconArrowsDownUpBold,
+		assets.IconArrowUp,
+		assets.IconArrowDown,
+		assets.IconGauge,
+		assets.IconArrowsDownUp,
+	}
+
+	for _, p := range iconPaths {
+		bmp, buf, err := RasterizeSVGToBitmap(p, 24, 24, 0xFFFFFFFF)
+		if err != nil {
+			t.Fatalf("RasterizeSVGToBitmap(%q) failed: %v", p, err)
+		}
+		nonZero := 0
+		for i := 3; i < len(buf); i += 4 {
+			if buf[i] > 0 {
+				nonZero++
+			}
+		}
+		_, _, _ = procGdipDisposeImage.Call(bmp)
+		if nonZero == 0 {
+			t.Fatalf("RasterizeSVGToBitmap(%q) produced an empty image", p)
+		}
+	}
+
+	hIcon, err := CreateTrayHICON(assets.IconGaugeBold, 96, 0xFFFFFFFF)
+	if err != nil {
+		t.Fatalf("CreateTrayHICON failed: %v", err)
+	}
+	_, _, _ = procDestroyIcon.Call(hIcon)
+}
+
+func TestResolveTaskbarFontName(t *testing.T) {
+	token, err := StartupGDIPlus()
+	if err != nil {
+		t.Fatalf("StartupGDIPlus failed: %v", err)
+	}
+	defer ShutdownGDIPlus(token)
+
+	font := ResolveTaskbarFontName()
+	if font == "" {
+		t.Fatal("ResolveTaskbarFontName returned empty string")
+	}
+	t.Logf("Resolved taskbar font: %s", font)
+}
+
+func TestComputeOverlayBoundsHorizontalAndVertical(t *testing.T) {
+	// 1920x1080 Windows 11 bottom taskbar at 96 DPI.
+	info := TaskbarInfo{
+		Valid:       true,
+		TaskbarRect: rect{Left: 0, Top: 1032, Right: 1920, Bottom: 1080},
+		TrayRect:    rect{Left: 1700, Top: 1032, Right: 1920, Bottom: 1080},
+		MonitorRect: rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080},
+		DPI:         96,
+	}
+	x, y, vis := ComputeOverlayBounds(info, 100, 38)
+	if !vis {
+		t.Fatal("expected overlay to be visible")
+	}
+	if x != 1596 || y != 1037 {
+		t.Fatalf("got (%d, %d), want (1596, 1037)", x, y)
+	}
+
+	// Hidden when fullscreen app blocks monitor.
+	info.FullscreenBlocking = true
+	if _, _, vis := ComputeOverlayBounds(info, 100, 38); vis {
+		t.Fatal("expected overlay hidden during fullscreen")
+	}
+
+	// Vertical taskbar fallback.
+	vert := TaskbarInfo{
+		Valid:       true,
+		TaskbarRect: rect{Left: 0, Top: 0, Right: 60, Bottom: 1080},
+		TrayRect:    rect{Left: 0, Top: 900, Right: 60, Bottom: 1080},
+		MonitorRect: rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080},
+		DPI:         96,
+	}
+	vx, vy, vvis := ComputeOverlayBounds(vert, 50, 36)
+	if !vvis {
+		t.Fatal("expected vertical taskbar overlay visible")
+	}
+	if vx != 5 || vy != 860 {
+		t.Fatalf("vertical got (%d, %d), want (5, 860)", vx, vy)
+	}
+}
+
+func TestThemeColorsContrast(t *testing.T) {
+	dark := ColorsForTheme(false)
+	if dark.IsLight || dark.TextARGB != 0xFFFFFFFF {
+		t.Fatalf("unexpected dark theme colors: %+v", dark)
+	}
+	light := ColorsForTheme(true)
+	if !light.IsLight || light.TextARGB == 0xFFFFFFFF {
+		t.Fatalf("unexpected light theme colors: %+v", light)
+	}
+}
+
+func TestOverlayRenderProducesPremultipliedPixels(t *testing.T) {
+	token, err := StartupGDIPlus()
+	if err != nil {
+		t.Fatalf("StartupGDIPlus failed: %v", err)
+	}
+	defer ShutdownGDIPlus(token)
+
+	app := NewApp(config.Default(), "", network.NewMonitor())
+	app.fontFamily = ResolveTaskbarFontName()
+	app.currentSample = network.SpeedSample{
+		DownloadBytesPerSec: 12.5 * 1024 * 1024,
+		UploadBytesPerSec:   1.24 * 1024,
+	}
+	app.rebuildDrawingResources(96, false, 48)
+	defer app.cleanupResources()
+
+	if app.gpFont == 0 {
+		t.Fatal("expected non-zero GDI+ font")
+	}
+	if app.upBitmap == 0 || app.downBitmap == 0 {
+		t.Fatal("expected non-zero arrow icon bitmaps")
+	}
+	if app.pBits == nil || app.metrics.width <= 0 || app.metrics.height <= 0 {
+		t.Fatalf("invalid DIB/metrics: pBits=%v w=%d h=%d", app.pBits, app.metrics.width, app.metrics.height)
+	}
+
+	var gfx uintptr
+	st, _, _ := procGdipGetImageGraphicsContext.Call(app.gpBitmap, uintptr(unsafe.Pointer(&gfx)))
+	if st != 0 || gfx == 0 {
+		t.Fatalf("GdipGetImageGraphicsContext failed: %d", st)
+	}
+	_, _, _ = procGdipSetSmoothingMode.Call(gfx, gpSmoothingModeHighQuality)
+	_, _, _ = procGdipSetTextRenderingHint.Call(gfx, gpTextRenderingHintAntiAliasGridFit)
+	_, _, _ = procGdipGraphicsClear.Call(gfx, 0x01000000)
+
+	totalRowsH := app.metrics.rowHeight*2 + app.metrics.rowGap
+	topY := (app.metrics.height - totalRowsH) / 2
+	app.drawSpeedRow(gfx, topY, app.upBitmap, app.formatRate(app.currentSample.UploadBytesPerSec))
+	app.drawSpeedRow(gfx, topY+app.metrics.rowHeight+app.metrics.rowGap, app.downBitmap, app.formatRate(app.currentSample.DownloadBytesPerSec))
+	_, _, _ = procGdipDeleteGraphics.Call(gfx)
+
+	pixels := unsafe.Slice((*byte)(app.pBits), int(app.dibW)*int(app.dibH)*4)
+	brightPixels := 0
+	for i := 0; i < len(pixels); i += 4 {
+		b, g, r, a := pixels[i], pixels[i+1], pixels[i+2], pixels[i+3]
+		if r > a || g > a || b > a {
+			t.Fatalf("pixel %d not premultiplied: BGRA=(%d,%d,%d,%d)", i/4, b, g, r, a)
+		}
+		if a > 30 && r > 20 && g > 20 && b > 20 {
+			brightPixels++
+		}
+	}
+	if brightPixels == 0 {
+		t.Fatal("rendered overlay contained no visible foreground pixels")
+	}
+	t.Logf("Overlay %dx%d rendered %d bright foreground pixels", app.metrics.width, app.metrics.height, brightPixels)
+}
+
+func TestBitsUnitFormattingAndColumnSizing(t *testing.T) {
+	token, err := StartupGDIPlus()
+	if err != nil {
+		t.Fatalf("StartupGDIPlus failed: %v", err)
+	}
+	defer ShutdownGDIPlus(token)
+
+	cfg := config.Default()
+	cfg.SpeedUnit = config.UnitBits
+	app := NewApp(cfg, "", network.NewMonitor())
+	app.fontFamily = ResolveTaskbarFontName()
+	app.rebuildDrawingResources(96, false, 48)
+	defer app.cleanupResources()
+
+	got := app.formatRate(3750000) // 30 Mbps
+	if got.Value != "30.0" || got.Unit != "Mbps" {
+		t.Fatalf("got %+v, want 30.0 Mbps", got)
+	}
+	if app.metrics.unitWidth <= 0 || app.metrics.width <= 0 {
+		t.Fatalf("unexpected bits metrics: %+v", app.metrics)
+	}
+}
