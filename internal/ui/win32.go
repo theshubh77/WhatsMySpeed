@@ -49,6 +49,7 @@ const (
 	wmTrayCallback    = wmApp + 1
 	wmSpeedTestUpdate = wmApp + 2
 	wmSyncOverlay     = wmApp + 3
+	wmShowDashboard   = wmApp + 4
 
 	swHide         = 0
 	swShowNormal   = 1
@@ -189,6 +190,7 @@ var (
 	procGetClassNameW                = modUser32.NewProc("GetClassNameW")
 	procGetForegroundWindow          = modUser32.NewProc("GetForegroundWindow")
 	procSetForegroundWindow          = modUser32.NewProc("SetForegroundWindow")
+	procAllowSetForegroundWindow     = modUser32.NewProc("AllowSetForegroundWindow")
 	procGetTopWindow                 = modUser32.NewProc("GetTopWindow")
 	procGetWindow                    = modUser32.NewProc("GetWindow")
 	procSetParent                    = modUser32.NewProc("SetParent")

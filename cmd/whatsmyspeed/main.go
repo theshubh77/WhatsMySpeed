@@ -1,9 +1,11 @@
 // WhatsMySpeed is a lightweight, native Windows 11 taskbar network speed monitor.
+// Author: Shubham Bhamare
 package main
 
 import (
 	"fmt"
 	"os"
+	"strings"
 	"unsafe"
 
 	"github.com/WhatsMySpeed/WhatsMySpeed/internal/config"
@@ -40,9 +42,23 @@ func showErrorBox(title, msg string) {
 	_, _, _ = msgBox.Call(0, uintptr(unsafe.Pointer(mPtr)), uintptr(unsafe.Pointer(tPtr)), 0x10)
 }
 
+func startsInTray(args []string) bool {
+	for _, a := range args {
+		if strings.EqualFold(a, config.AutoStartArg) ||
+			strings.EqualFold(a, "--minimized") ||
+			strings.EqualFold(a, "--background") {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
+	openOnLaunch := !startsInTray(os.Args[1:])
+
 	mutex, ok := acquireSingleInstance()
 	if !ok {
+		ui.ActivateExistingInstance()
 		return
 	}
 	if mutex != 0 {
@@ -50,10 +66,10 @@ func main() {
 	}
 
 	cfgPath, _ := config.ConfigPath()
-	cfg, _ := config.Load()
+	cfg, _ := config.LoadAndSyncStartup(cfgPath)
 
 	monitor := network.NewMonitor()
-	app := ui.NewApp(cfg, cfgPath, monitor)
+	app := ui.NewApp(cfg, cfgPath, monitor, openOnLaunch)
 	if err := app.Run(); err != nil {
 		showErrorBox(config.AppName, fmt.Sprintf("Failed to start %s:\n%v", config.AppName, err))
 		os.Exit(1)

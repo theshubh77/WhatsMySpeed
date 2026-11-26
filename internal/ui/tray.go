@@ -28,7 +28,10 @@ const (
 	cmdLayoutComp   uint32 = 1013
 	cmdRunSpeedTest uint32 = 1014
 	cmdAutoStart    uint32 = 1015
-	cmdExit         uint32 = 1016
+	cmdThemeSystem  uint32 = 1016
+	cmdThemeDark    uint32 = 1017
+	cmdThemeLight   uint32 = 1018
+	cmdExit         uint32 = 1019
 )
 
 // TrayManager owns the Shell_NotifyIconW icon and popup context menu.
@@ -190,6 +193,13 @@ func (t *TrayManager) ShowContextMenu(cfg config.Config, autoStart bool) uint32 
 		_ = insertMenuItem(unitSub, 1, cmdUnitBits, "Bits/s (Kbps, Mbps)", mftString|mftRadioCheck, checkState(cfg.SpeedUnit == config.UnitBits), 0)
 	}
 
+	themeSub, _, _ := procCreatePopupMenu.Call()
+	if themeSub != 0 {
+		_ = insertMenuItem(themeSub, 0, cmdThemeSystem, "System (Auto)", mftString|mftRadioCheck, checkState(cfg.Theme == config.ThemeSystem), 0)
+		_ = insertMenuItem(themeSub, 1, cmdThemeDark, "Dark", mftString|mftRadioCheck, checkState(cfg.Theme == config.ThemeDark), 0)
+		_ = insertMenuItem(themeSub, 2, cmdThemeLight, "Light", mftString|mftRadioCheck, checkState(cfg.Theme == config.ThemeLight), 0)
+	}
+
 	pos := uint32(0)
 	add := func(id uint32, text string, fType, state uint32, sub uintptr) {
 		_ = insertMenuItem(hMenu, pos, id, text, fType, state, sub)
@@ -212,6 +222,9 @@ func (t *TrayManager) ShowContextMenu(cfg config.Config, autoStart bool) uint32 
 	}
 	if unitSub != 0 {
 		add(0, "Speed Unit", mftString, mfsUnchecked, unitSub)
+	}
+	if themeSub != 0 {
+		add(0, "Theme", mftString, mfsUnchecked, themeSub)
 	}
 	add(0, "", mftSeparator, mfsUnchecked, 0)
 	add(cmdAutoStart, "Start with Windows", mftString, checkState(autoStart), 0)

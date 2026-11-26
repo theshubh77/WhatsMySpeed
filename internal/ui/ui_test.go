@@ -177,7 +177,7 @@ func TestOverlayRenderProducesPremultipliedPixels(t *testing.T) {
 	}
 	defer ShutdownGDIPlus(token)
 
-	app := NewApp(config.Default(), "", network.NewMonitor())
+	app := NewApp(config.Default(), "", network.NewMonitor(), false)
 	app.fontFamily = ResolveTaskbarFontName()
 	app.currentSample = network.SpeedSample{
 		DownloadBytesPerSec: 12.5 * 1024 * 1024,
@@ -238,7 +238,7 @@ func TestBitsUnitFormattingAndColumnSizing(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.SpeedUnit = config.UnitBits
-	app := NewApp(cfg, "", network.NewMonitor())
+	app := NewApp(cfg, "", network.NewMonitor(), false)
 	app.fontFamily = ResolveTaskbarFontName()
 	app.rebuildDrawingResources(96, false, 48)
 	defer app.cleanupResources()
@@ -268,7 +268,7 @@ func TestLabelStylesAndLayoutsRenderCleanly(t *testing.T) {
 			cfg.LabelStyle = lbl
 			cfg.Layout = lay
 
-			app := NewApp(cfg, "", network.NewMonitor())
+			app := NewApp(cfg, "", network.NewMonitor(), false)
 			app.fontFamily = ResolveTaskbarFontName()
 			app.currentSample = network.SpeedSample{
 				DownloadBytesPerSec: 12.5 * 1024 * 1024,
@@ -312,7 +312,7 @@ func TestSettingsWindowSceneAndHitTest(t *testing.T) {
 	}
 	defer ShutdownGDIPlus(token)
 
-	app := NewApp(config.Default(), "", network.NewMonitor())
+	app := NewApp(config.Default(), "", network.NewMonitor(), false)
 	app.fontFamily = ResolveTaskbarFontName()
 	app.currentSample = network.SpeedSample{
 		DownloadBytesPerSec: 3_750_000,
@@ -551,5 +551,132 @@ func TestChildLayeredWindowClientCoordinates(t *testing.T) {
 	r, rOK := getWindowRect(child)
 	if !rOK || r.Left != 170 || r.Top != 144 || r.Right != 290 || r.Bottom != 184 {
 		t.Fatalf("child rect = %+v (ok=%v), want {170 144 290 184}", r, rOK)
+	}
+}
+
+func TestDashboardControlsAndConfigPersistence(t *testing.T) {
+	if linkedinURL != "https://www.linkedin.com/in/theshubh77" {
+		t.Fatalf("linkedinURL = %q, want https://www.linkedin.com/in/theshubh77", linkedinURL)
+	}
+
+	token, err := StartupGDIPlus()
+	if err != nil {
+		t.Fatalf("StartupGDIPlus failed: %v", err)
+	}
+	defer ShutdownGDIPlus(token)
+
+	cfgPath := filepath.Join(t.TempDir(), "WhatsMySpeed", "config.json")
+	app := NewApp(config.Default(), cfgPath, network.NewMonitor(), false)
+	app.fontFamily = ResolveTaskbarFontName()
+	win := NewSettingsWindow(app)
+	app.settings = win
+	defer win.releaseDrawResources()
+
+	win.clientW = scaleDPIInt(baseWindowW, 96)
+	win.clientH = scaleDPIInt(baseWindowH, 96)
+
+	for _, isLight := range []bool{false, true} {
+		win.ensureDrawResources(96, isLight)
+		if win.gpBitmap == 0 {
+			t.Fatalf("ensureDrawResources(isLight=%v) did not allocate DIB", isLight)
+		}
+		var gfx uintptr
+		st, _, _ := procGdipGetImageGraphicsContext.Call(win.gpBitmap, uintptr(unsafe.Pointer(&gfx)))
+		if st != 0 || gfx == 0 {
+			t.Fatalf("GdipGetImageGraphicsContext failed: status %d", st)
+		}
+		win.renderScene(gfx, win.clientW, win.clientH, 96, isLight)
+		_, _, _ = procGdipDeleteGraphics.Call(gfx)
+	}
+
+	// Verify every interactive control exists in win.controls and hit-testing finds it.
+	expectedActions := []controlAction{
+		actThemeLight, actThemeDark, actThemeSystem,
+		actSpeedTestToggle,
+		actModeBoth, actModeDownload, actModeUpload, actModeHide,
+		actLabelArrows, actLabelUD, actLabelWords,
+		actLayoutStackU, actLayoutStackD, actLayoutInline, actLayoutCompact,
+		actUnitBytes, actUnitBits,
+		actAutoStart, actGitHub, actSponsor, actLinkedIn,
+	}
+	seen := make(map[controlAction]bool, len(win.controls))
+	for _, c := range win.controls {
+		if c.bounds.Width() <= 0 || c.bounds.Height() <= 0 {
+			t.Fatalf("control action %d has empty bounds %+v", c.action, c.bounds)
+		}
+		cx := c.bounds.Left + c.bounds.Width()/2
+		cy := c.bounds.Top + c.bounds.Height()/2
+		if got := win.hitTest(cx, cy); got != c.action {
+			t.Fatalf("hitTest(%d,%d) = %d, want %d", cx, cy, got, c.action)
+		}
+		seen[c.action] = true
+	}
+	for _, act := range expectedActions {
+		if !seen[act] {
+			t.Fatalf("expected interactive control action %d missing from dashboard", act)
+		}
+	}
+
+	// Verify hover tooltips render cleanly for Light, Dark, and System theme buttons.
+	expectedTips := map[controlAction]string{
+		actThemeLight:  "Light Theme",
+		actThemeDark:   "Dark Theme",
+		actThemeSystem: "System Theme",
+	}
+	for act, wantTip := range expectedTips {
+		if got := themeTooltipText(act); got != wantTip {
+			t.Fatalf("themeTooltipText(%d) = %q, want %q", act, got, wantTip)
+		}
+		win.hoveredAct = act
+		var gfx uintptr
+		st, _, _ := procGdipGetImageGraphicsContext.Call(win.gpBitmap, uintptr(unsafe.Pointer(&gfx)))
+		if st != 0 || gfx == 0 {
+			t.Fatalf("GdipGetImageGraphicsContext(tooltip %d) failed: %d", act, st)
+		}
+		win.renderScene(gfx, win.clientW, win.clientH, 96, false)
+		_, _, _ = procGdipDeleteGraphics.Call(gfx)
+	}
+	win.hoveredAct = actNone
+
+	// Exercise setting actions through handleAction and verify persistence in config.json.
+	settingActions := []controlAction{
+		actThemeLight,
+		actThemeDark,
+		actThemeSystem,
+		actModeDownload,
+		actModeUpload,
+		actModeHide,
+		actModeBoth,
+		actLabelUD,
+		actLabelWords,
+		actLabelArrows,
+		actLayoutStackD,
+		actLayoutInline,
+		actLayoutCompact,
+		actLayoutStackU,
+		actUnitBits,
+		actUnitBytes,
+	}
+	for _, act := range settingActions {
+		win.handleAction(act)
+	}
+	loaded, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadFrom(%q) failed: %v", cfgPath, err)
+	}
+	if loaded != app.cfg {
+		t.Fatalf("persisted config %+v != app.cfg %+v", loaded, app.cfg)
+	}
+}
+
+func TestGaugeStateAcrossPhases(t *testing.T) {
+	if frac, val := targetGaugeState(speedtest.Progress{Phase: speedtest.PhaseDone, DownloadMbps: 250, UploadMbps: 120}); frac != 0 || val != 0 {
+		t.Fatalf("PhaseDone targetGaugeState = (%v, %v), want (0, 0)", frac, val)
+	}
+	if frac, val := targetGaugeState(speedtest.Progress{Phase: speedtest.PhasePause, CompletedPhase: speedtest.PhaseDownload}); frac != 0 || val != 0 {
+		t.Fatalf("PhasePause(after download) targetGaugeState = (%v, %v), want (0, 0)", frac, val)
+	}
+	if frac, val := targetGaugeState(speedtest.Progress{Phase: speedtest.PhaseDownload, DownloadMbps: 100}); frac <= 0 || val != 100 {
+		t.Fatalf("PhaseDownload targetGaugeState = (%v, %v), want (>0, 100)", frac, val)
 	}
 }

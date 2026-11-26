@@ -240,7 +240,12 @@ func (w *SettingsWindow) Show(startSpeedTest bool) {
 	}
 
 	w.applyTitleBarTheme()
-	_, _, _ = procShowWindow.Call(w.hwnd, swRestore)
+	if iconic, _, _ := procIsIconic.Call(w.hwnd); iconic != 0 {
+		_, _, _ = procShowWindow.Call(w.hwnd, swRestore)
+	} else {
+		_, _, _ = procShowWindow.Call(w.hwnd, swShowNormal)
+	}
+	_, _, _ = procSetWindowPos.Call(w.hwnd, hwndTop, 0, 0, 0, 0, swpNoMove|swpNoSize|swpShowWindow)
 	_, _, _ = procSetForegroundWindow.Call(w.hwnd)
 	w.invalidate()
 
@@ -531,6 +536,19 @@ func (w *SettingsWindow) handleMessage(message uint32, wParam, lParam uintptr) u
 	return ret
 }
 
+func themeTooltipText(act controlAction) string {
+	switch act {
+	case actThemeLight:
+		return "Light Theme"
+	case actThemeDark:
+		return "Dark Theme"
+	case actThemeSystem:
+		return "System Theme"
+	default:
+		return ""
+	}
+}
+
 func (w *SettingsWindow) hitTest(x, y int32) controlAction {
 	for _, c := range w.controls {
 		if c.bounds.Contains(x, y) {
@@ -586,10 +604,7 @@ func (w *SettingsWindow) handleAction(act controlAction) {
 	case actUnitBits:
 		cfg.SpeedUnit = config.UnitBits
 	case actAutoStart:
-		enabled, _ := config.IsAutoStartEnabled()
-		_ = config.SetAutoStart(!enabled)
-		w.invalidate()
-		return
+		cfg.StartWithWindows = !cfg.StartWithWindows
 	case actGitHub:
 		openExternalURL(w.hwnd, repoURL)
 		return
@@ -1443,7 +1458,7 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	footH := footTopH + footBotH
 	drawCard(marginX, footY, cardW, footH, s(16))
 
-	autoStart, _ := config.IsAutoStartEnabled()
+	autoStart := cfg.StartWithWindows
 	swW := s(48)
 	swH := s(26)
 	swX := marginX + s(16)
@@ -1461,6 +1476,8 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	if autoStart {
 		trackBrush = bCyan
 		knobX = swX + swW - s(23)
+	} else if w.hoveredAct == actAutoStart {
+		trackBrush = bPillHover
 	}
 	gpFillRoundedRect(gfx, trackBrush, swX, swY, swW, swH, swH/2)
 	gpFillRoundedRect(gfx, bKnob, knobX, swY+s(3), s(20), s(20), s(10))
@@ -1550,6 +1567,30 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	} else {
 		ulY := creditY + creditH - s(9)
 		gpFillRoundedRect(gfx, bFaintBorder, curX, ulY, wAuth, 1, 0)
+	}
+
+	if tipText := themeTooltipText(w.hoveredAct); tipText != "" {
+		for _, c := range w.controls {
+			if c.action == w.hoveredAct {
+				tipTextW, _ := gpMeasureString(gfx, w.fontSmall, fmtTypo, tipText)
+				tipW := int32(math.Ceil(float64(tipTextW))) + s(20)
+				tipH := s(28)
+				tipX := c.bounds.Left + (c.bounds.Width()-tipW)/2
+				if tipX+tipW > width-marginX {
+					tipX = width - marginX - tipW
+				}
+				if tipX < marginX {
+					tipX = marginX
+				}
+				tipY := themeCapY + themeCapH + s(5)
+				gpFillRoundedRect(gfx, bBorder, tipX, tipY, tipW, tipH, s(8))
+				gpFillRoundedRect(gfx, bPill, tipX+1, tipY+1, tipW-2, tipH-2, s(7))
+				gpDrawString(gfx, w.fontSmall, fmtCenter, bText, tipText, gpRectF{
+					X: float32(tipX), Y: float32(tipY), Width: float32(tipW), Height: float32(tipH),
+				})
+				break
+			}
+		}
 	}
 }
 

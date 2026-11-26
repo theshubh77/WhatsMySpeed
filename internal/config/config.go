@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +10,10 @@ import (
 	"path/filepath"
 )
 
-const AppName = "WhatsMySpeed"
+const (
+	AppName   = "WhatsMySpeed"
+	AppAuthor = "Shubham Bhamare"
+)
 
 // DisplayMode controls how speeds are shown on the Windows 11 taskbar.
 type DisplayMode string
@@ -59,21 +63,23 @@ const (
 
 // Config holds persisted user preferences.
 type Config struct {
-	DisplayMode DisplayMode   `json:"display_mode"`
-	SpeedUnit   SpeedUnit     `json:"speed_unit"`
-	LabelStyle  LabelStyle    `json:"label_style"`
-	Layout      OverlayLayout `json:"layout"`
-	Theme       ThemeMode     `json:"theme"`
+	DisplayMode      DisplayMode   `json:"display_mode"`
+	SpeedUnit        SpeedUnit     `json:"speed_unit"`
+	LabelStyle       LabelStyle    `json:"label_style"`
+	Layout           OverlayLayout `json:"layout"`
+	Theme            ThemeMode     `json:"theme"`
+	StartWithWindows bool          `json:"start_with_windows"`
 }
 
 // Default returns the default configuration.
 func Default() Config {
 	return Config{
-		DisplayMode: ModeBoth,
-		SpeedUnit:   UnitBytes,
-		LabelStyle:  LabelArrows,
-		Layout:      LayoutStackedUp,
-		Theme:       ThemeSystem,
+		DisplayMode:      ModeBoth,
+		SpeedUnit:        UnitBytes,
+		LabelStyle:       LabelArrows,
+		Layout:           LayoutStackedUp,
+		Theme:            ThemeSystem,
+		StartWithWindows: true,
 	}
 }
 
@@ -175,8 +181,9 @@ func LoadFrom(path string) (Config, error) {
 		return Default(), fmt.Errorf("read config %q: %w", path, err)
 	}
 
-	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	cfg := Default()
+	cleanData := bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	if err := json.Unmarshal(cleanData, &cfg); err != nil {
 		return Default(), fmt.Errorf("parse config %q: %w", path, err)
 	}
 	return normalizeConfig(cfg), nil
@@ -231,4 +238,94 @@ func SaveTo(path string, cfg Config) error {
 	}
 	cleanup = false
 	return nil
+}
+
+var (
+	queryAutoStart = IsAutoStartEnabled
+	applyAutoStart = SetAutoStart
+)
+
+func hasAllConfigKeys(raw map[string]json.RawMessage) bool {
+	if raw == nil {
+		return false
+	}
+	for _, k := range []string{"display_mode", "speed_unit", "label_style", "layout", "theme", "start_with_windows"} {
+		if _, ok := raw[k]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// LoadAndSyncStartup loads preferences from path (or the default %APPDATA%\WhatsMySpeed\config.json
+// when empty), creates/upgrades missing config fields while preserving any pre-existing Windows Run
+// entry on upgrade, and keeps HKCU\...\Run synchronized with start_with_windows.
+func LoadAndSyncStartup(path string) (Config, error) {
+	if path == "" {
+		resolved, err := ConfigPath()
+		if err != nil {
+			cfg := Default()
+			if enabled, rErr := queryAutoStart(); rErr == nil {
+				cfg.StartWithWindows = enabled
+			}
+			return cfg, err
+		}
+		path = resolved
+	}
+
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		cfg := Default()
+		if errors.Is(readErr, os.ErrNotExist) {
+			if sErr := applyAutoStart(cfg.StartWithWindows); sErr != nil {
+				if enabled, rErr := queryAutoStart(); rErr == nil {
+					cfg.StartWithWindows = enabled
+				}
+			}
+			_ = SaveTo(path, cfg)
+			return cfg, nil
+		}
+		if enabled, rErr := queryAutoStart(); rErr == nil {
+			cfg.StartWithWindows = enabled
+		}
+		return cfg, fmt.Errorf("read config %q: %w", path, readErr)
+	}
+
+	parsed := Default()
+	cleanData := bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	if err := json.Unmarshal(cleanData, &parsed); err != nil {
+		fallback := Default()
+		if enabled, rErr := queryAutoStart(); rErr == nil {
+			fallback.StartWithWindows = enabled
+		}
+		return fallback, fmt.Errorf("parse config %q: %w", path, err)
+	}
+
+	cfg := normalizeConfig(parsed)
+
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(cleanData, &raw)
+	_, hasAutoStartKey := raw["start_with_windows"]
+
+	if !hasAutoStartKey {
+		if sErr := applyAutoStart(cfg.StartWithWindows); sErr != nil {
+			if enabled, rErr := queryAutoStart(); rErr == nil {
+				cfg.StartWithWindows = enabled
+			}
+		}
+		_ = SaveTo(path, cfg)
+		return cfg, nil
+	}
+
+	regEnabled, rErr := queryAutoStart()
+	if rErr != nil || regEnabled != cfg.StartWithWindows || cfg.StartWithWindows {
+		if sErr := applyAutoStart(cfg.StartWithWindows); sErr != nil && rErr == nil {
+			cfg.StartWithWindows = regEnabled
+		}
+	}
+
+	if !hasAllConfigKeys(raw) || cfg != parsed {
+		_ = SaveTo(path, cfg)
+	}
+	return cfg, nil
 }

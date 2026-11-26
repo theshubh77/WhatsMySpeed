@@ -9,11 +9,15 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-const runRegistryPath = `Software\Microsoft\Windows\CurrentVersion\Run`
+const (
+	runRegistryPath = `Software\Microsoft\Windows\CurrentVersion\Run`
+	// AutoStartArg marks launches initiated from the Windows Run registry entry so they start quietly in the taskbar/tray.
+	AutoStartArg = "--tray"
+)
 
 // FormatAutoStartCommand returns the quoted command line written to the Windows Run key.
 func FormatAutoStartCommand(exePath string) string {
-	return fmt.Sprintf(`"%s"`, exePath)
+	return fmt.Sprintf(`"%s" %s`, exePath, AutoStartArg)
 }
 
 // IsAutoStartEnabled reports whether WhatsMySpeed is registered to launch on Windows sign-in.

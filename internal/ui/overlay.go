@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/WhatsMySpeed/WhatsMySpeed/assets"
@@ -20,9 +21,10 @@ const (
 	timerSampleID    = 1
 	timerZOrderID    = 2
 	timerReassertID  = 3
-	sampleIntervalMs = 1000
-	zOrderIntervalMs = 200
-	reassertDelayMs  = 50
+	sampleIntervalMs  = 1000
+	zOrderIntervalMs  = 200
+	reassertDelayMs   = 50
+	overlayFontWeight = 700
 )
 
 type layoutMetrics struct {
@@ -45,9 +47,10 @@ type layoutMetrics struct {
 
 // App manages the Win32 layered taskbar overlay, system tray icon, settings window, and 1-second refresh loop.
 type App struct {
-	cfgPath string
-	cfg     config.Config
-	monitor *network.Monitor
+	cfgPath     string
+	cfg         config.Config
+	monitor     *network.Monitor
+	openOnStart bool
 
 	gdipToken         uintptr
 	fontFamily        string
@@ -109,11 +112,12 @@ var (
 )
 
 // NewApp constructs the UI application with the provided configuration and network monitor.
-func NewApp(cfg config.Config, cfgPath string, monitor *network.Monitor) *App {
+func NewApp(cfg config.Config, cfgPath string, monitor *network.Monitor, openOnStart bool) *App {
 	return &App{
-		cfg:     cfg,
-		cfgPath: cfgPath,
-		monitor: monitor,
+		cfg:         cfg,
+		cfgPath:     cfgPath,
+		monitor:     monitor,
+		openOnStart: openOnStart,
 	}
 }
 
@@ -170,6 +174,9 @@ func (a *App) Run() error {
 		a.currentSample = s
 	}
 	a.renderAndPosition()
+	if a.openOnStart {
+		a.OpenSettingsWindow(false)
+	}
 
 	a.ensureWinEventHooks(a.taskbarHWND)
 	defer a.uninstallWinEventHooks()
@@ -320,6 +327,10 @@ func (a *App) handleMessage(hwnd uintptr, message uint32, wParam, lParam uintptr
 		a.syncPending.Store(false)
 		a.syncPositionAndZOrder()
 		_, _, _ = procSetTimer.Call(a.hostHWND, timerReassertID, reassertDelayMs, 0)
+		return 0
+
+	case wmShowDashboard:
+		a.OpenSettingsWindow(false)
 		return 0
 
 	case wmMouseMove:
@@ -477,9 +488,9 @@ func (a *App) rebuildDrawingResources(dpi uint32, isLight bool, taskbarHeight in
 		defer procReleaseDC.Call(0, screenDC)
 	}
 
-	if font, err := gpCreateFontPx(screenDC, a.fontFamily, a.metrics.fontPx, 500); err == nil {
+	if font, err := gpCreateFontPx(screenDC, a.fontFamily, a.metrics.fontPx, overlayFontWeight); err == nil {
 		a.gpFont = font
-	} else if font, err := gpCreateFontPx(screenDC, "Segoe UI", a.metrics.fontPx, 500); err == nil {
+	} else if font, err := gpCreateFontPx(screenDC, "Segoe UI", a.metrics.fontPx, overlayFontWeight); err == nil {
 		a.gpFont = font
 	}
 
@@ -525,24 +536,24 @@ func (a *App) computeMetrics(dpi uint32, taskbarHeight int32) layoutMetrics {
 	switch {
 	case a.cfg.DisplayMode != config.ModeBoth || isInline:
 		m.fontPx = scaleDPIInt(13, dpi)
-		m.iconSize = scaleDPIInt(11, dpi)
+		m.iconSize = scaleDPIInt(14, dpi)
 		m.rowHeight = scaleDPIInt(18, dpi)
 		m.rowGap = 0
 		m.height = scaleDPIInt(38, dpi)
 		if isCompact {
 			m.fontPx = scaleDPIInt(12, dpi)
-			m.iconSize = scaleDPIInt(10, dpi)
+			m.iconSize = scaleDPIInt(13, dpi)
 			m.height = scaleDPIInt(32, dpi)
 		}
 	case isCompact:
 		m.fontPx = scaleDPIInt(11, dpi)
-		m.iconSize = scaleDPIInt(9, dpi)
+		m.iconSize = scaleDPIInt(12, dpi)
 		m.rowHeight = scaleDPIInt(13, dpi)
 		m.rowGap = 0
 		m.height = m.rowHeight*2 + scaleDPIInt(6, dpi)
 	default:
 		m.fontPx = scaleDPIInt(12, dpi)
-		m.iconSize = scaleDPIInt(10, dpi)
+		m.iconSize = scaleDPIInt(13, dpi)
 		m.rowHeight = scaleDPIInt(15, dpi)
 		m.rowGap = scaleDPIInt(1, dpi)
 		m.height = m.rowHeight*2 + m.rowGap + scaleDPIInt(8, dpi)
@@ -591,7 +602,7 @@ func (a *App) measureColumns(dpi uint32, fontPx int32, iconSize int32) (int32, i
 	if screenDC != 0 {
 		defer procReleaseDC.Call(0, screenDC)
 	}
-	font, err := gpCreateFontPx(screenDC, a.fontFamily, fontPx, 500)
+	font, err := gpCreateFontPx(screenDC, a.fontFamily, fontPx, overlayFontWeight)
 	if err != nil {
 		return fallbackInd, fallbackVal, fallbackUnit
 	}
@@ -1147,8 +1158,7 @@ func (a *App) openContextMenu() {
 	if a.tray == nil {
 		return
 	}
-	autoStart, _ := config.IsAutoStartEnabled()
-	cmd := a.tray.ShowContextMenu(a.cfg, autoStart)
+	cmd := a.tray.ShowContextMenu(a.cfg, a.cfg.StartWithWindows)
 
 	next := a.cfg
 	switch cmd {
@@ -1184,12 +1194,14 @@ func (a *App) openContextMenu() {
 		next.Layout = config.LayoutInline
 	case cmdLayoutComp:
 		next.Layout = config.LayoutCompact
+	case cmdThemeSystem:
+		next.Theme = config.ThemeSystem
+	case cmdThemeDark:
+		next.Theme = config.ThemeDark
+	case cmdThemeLight:
+		next.Theme = config.ThemeLight
 	case cmdAutoStart:
-		_ = config.SetAutoStart(!autoStart)
-		if a.settings != nil {
-			a.settings.RefreshAppearance()
-		}
-		return
+		next.StartWithWindows = !a.cfg.StartWithWindows
 	case cmdExit:
 		target := a.hostHWND
 		if target == 0 {
@@ -1225,6 +1237,19 @@ func (a *App) ApplyConfig(next config.Config) {
 		return
 	}
 
+	if next.StartWithWindows != a.cfg.StartWithWindows {
+		if err := config.SetAutoStart(next.StartWithWindows); err != nil {
+			if actual, qErr := config.IsAutoStartEnabled(); qErr == nil {
+				next.StartWithWindows = actual
+			} else {
+				next.StartWithWindows = a.cfg.StartWithWindows
+			}
+		}
+		if next == a.cfg {
+			return
+		}
+	}
+
 	wasHidden := a.cfg.DisplayMode == config.ModeHide
 	a.cfg = next
 	if a.cfgPath != "" {
@@ -1248,6 +1273,22 @@ func (a *App) ApplyConfig(next config.Config) {
 	if a.settings != nil {
 		a.settings.RefreshAppearance()
 	}
+}
+
+// ActivateExistingInstance signals an already-running WhatsMySpeed instance to show and focus its dashboard window.
+func ActivateExistingInstance() bool {
+	for attempt := 0; attempt < 10; attempt++ {
+		hwnd := findWindow(hostClassName)
+		if hwnd != 0 {
+			if pid := getWindowProcessID(hwnd); pid != 0 {
+				_, _, _ = procAllowSetForegroundWindow.Call(uintptr(pid))
+			}
+			_, _, _ = procPostMessageW.Call(hwnd, wmShowDashboard, 0, 0)
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
 }
 
 // OpenSettingsWindow opens and focuses the WhatsMySpeed settings and speedtest window.

@@ -20,14 +20,16 @@ A lightweight, native Windows 11 real-time internet speed monitor written in pur
   - **Taskbar Layouts:** `Stacked (↑/↓)`, `Stacked (↓/↑)`, `Inline` (side-by-side), or `Compact`
   - **Display Modes:** `Show Both`, `Download Only`, `Upload Only`, `Hide Speed`
 - **Built-In Speed Test & Dashboard (`Open WhatsMySpeed`):**
-  - Click the tray icon, double-click the taskbar overlay, or choose **Open WhatsMySpeed** from the right-click menu to open the dashboard with Light, Dark, and System theme switching.
-  - Includes a large 270° multi-stream **Speed Test** gauge (Ping, Download Mbps, Upload Mbps) alongside capsule controls for all taskbar settings, `Start with Windows`, GitHub repository link (`https://github.com/theshubh77/WhatsMySpeed`), and Sponsor link.
+  - Launch the app icon (`WhatsMySpeed.exe` or shortcut) — whether for the first time or while running — click/double-click the system tray icon, double-click the taskbar speed overlay, or choose **Open WhatsMySpeed** from the tray right-click menu to open the dashboard.
+  - Supports **Light**, **Dark**, and **System** theme icons (with hover tooltips), a live header download/upload badge, and a 270° animated speedometer gauge with multi-stream **Ping** (8 probes), **Download** (8s), and **Upload** (8s) phases separated by clean 1.5s intervals — resetting the gauge upon completion while preserving Ping, Download, and Upload summary pills (`Run Speed Test` / `Cancel` / `Test Again`).
+  - Interactive capsule controls for every preference (`Show`, `Label`, `Layout`, `Unit`, `Theme`, `Start with Windows`), plus **GitHub** (`https://github.com/theshubh77/WhatsMySpeed`), **Sponsor**, and **Shubham Bhamare** ([LinkedIn](https://www.linkedin.com/in/theshubh77)) links.
 - **Native Windows 11 Integration:**
-  - Borderless, transparent, click-responsive layered window (`WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_NOACTIVATE`) with zero focus stealing.
-  - Automatically docks beside `TrayNotifyWnd` (just left of the `^` chevron) and reacts to taskbar resize, DPI scaling, display changes, Explorer restarts, auto-hide, and fullscreen apps.
+  - Docks cleanly inside `Shell_TrayWnd` beside `TrayNotifyWnd` as a zero-focus-stealing transparent layered window (with automatic topmost fallback when needed), keeping proper taskbar Z-order even over Quick Settings, Start, and Alt+Tab.
+  - Automatically reacts to taskbar resize, DPI scaling (`PerMonitorV2`), display changes, Explorer restarts, taskbar auto-hide, and fullscreen apps.
+  - Single-instance mutex prevents duplicate background processes; launching the app icon opens and focuses the dashboard window on first launch and subsequent launches, while Windows auto-start (`--tray`) launches quietly to the taskbar and tray.
   - Automatically detects Windows 11 Light/Dark taskbar theme (`SystemUsesLightTheme` / `AppsUseLightTheme`) and renders anti-aliased `Segoe UI Variable Text` (falling back to `Segoe UI`).
-- **App & Taskbar Icons Embedded:** Embeds the custom WhatsMySpeed application icon (EXE icon, window icon, and tray icon) along with official [Phosphor Icons](https://phosphoricons.com/) (`arrow-up`, `arrow-down`, and `gauge`) directly into the standalone `.exe` with crisp multi-DPI rendering.
-- **Persistence:** Saves preferences in `%APPDATA%\WhatsMySpeed\config.json` and autostart in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+- **App & Taskbar Icons Embedded:** Embeds the custom WhatsMySpeed application icon (EXE icon, window icon, and tray icon) and official [Phosphor Icons](https://phosphoricons.com/) directly into the standalone `.exe` with crisp multi-DPI rendering.
+- **Full Persistence:** Automatically initializes and persists every control in `%APPDATA%\WhatsMySpeed\config.json`, keeping Windows startup (`Start with Windows` / `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) in sync.
 
 ## Project Structure
 
@@ -88,7 +90,7 @@ go build -trimpath -ldflags="-s -w -H=windowsgui" -o WhatsMySpeed.exe ./cmd/what
 .\WhatsMySpeed.exe
 ```
 
-> `-H=windowsgui` builds a native GUI subsystem executable so no console window appears on launch.
+> `-H=windowsgui` builds a native GUI subsystem executable so no console window appears on launch. `build.ps1` also automatically recompiles `rsrc_windows_amd64.syso` from `app.rc` if `x86_64-w64-mingw32-windres` is available on `PATH`.
 
 ### Running Tests
 
@@ -98,7 +100,7 @@ go test -v ./...
 
 ## Configuration
 
-Settings are automatically saved to:
+Every control setting is automatically initialized and saved to:
 
 ```text
 %APPDATA%\WhatsMySpeed\config.json
@@ -111,7 +113,9 @@ Example:
   "display_mode": "both",
   "speed_unit": "bytes",
   "label_style": "arrows",
-  "layout": "stacked_up"
+  "layout": "stacked_up",
+  "theme": "system",
+  "start_with_windows": true
 }
 ```
 
@@ -120,10 +124,15 @@ Example:
 - `label_style`: `"arrows"` (Phosphor icons, default), `"ud"` (`U` / `D`), or `"words"` (`Up` / `Down`)
 - `layout`: `"stacked_up"` (default), `"stacked_down"`, `"inline"`, or `"compact"`
 - `theme`: `"system"` (default), `"dark"`, or `"light"`
+- `start_with_windows`: `true` (default) or `false` (automatically kept in sync with `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` using `--tray`)
 
 ## Contributing
 
 Contributions, bug reports, and pull requests are welcome! Please run `go test ./...` before submitting changes.
+
+## Author
+
+- **Shubham Bhamare** — [LinkedIn](https://www.linkedin.com/in/theshubh77) · [GitHub](https://github.com/theshubh77)
 
 ## Sponsor
 
@@ -133,4 +142,4 @@ If you find **WhatsMySpeed** useful and would like to support its development, y
 
 - Licensed under the [MIT License](LICENSE).
 - App icon based on `andrsrxn:wifi-in-out` by [Andrés Raxón](https://github.com/andrsrxn/icons) (MIT License).
-- Directional indicator icons from [Phosphor Icons](https://phosphoricons.com/) (MIT License).
+- Directional & UI icons from [Phosphor Icons](https://phosphoricons.com/) (MIT License).
