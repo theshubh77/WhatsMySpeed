@@ -328,8 +328,10 @@ func TestSettingsWindowSceneAndHitTest(t *testing.T) {
 		Phase:        speedtest.PhaseDone,
 		Percent:      100,
 		PingMs:       18,
-		DownloadMbps: 30.4,
-		UploadMbps:   12.1,
+		JitterMs:     2,
+		DownloadMbps: 142.6,
+		UploadMbps:   68.4,
+		Samples:      []float64{18, 46, 92, 118, 134, 141, 138, 145, 142, 140, 144, 142.6},
 	}
 	defer sw.releaseDrawResources()
 

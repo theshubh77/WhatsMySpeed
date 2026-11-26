@@ -36,6 +36,7 @@ func TestRunAgainstLocalServer(t *testing.T) {
 	defer srv.Close()
 
 	var phases []Phase
+	var pauseCount int
 	res := Run(context.Background(), Options{
 		BaseURL:          srv.URL,
 		PingCount:        3,
@@ -45,9 +46,13 @@ func TestRunAgainstLocalServer(t *testing.T) {
 		DownloadBytes:    int64(len(payload)),
 		UploadChunkBytes: 128 * 1024,
 		Warmup:           100 * time.Millisecond,
+		PhaseGap:         60 * time.Millisecond,
 		Client:           srv.Client(),
 	}, func(p Progress) {
 		phases = append(phases, p.Phase)
+		if p.Phase == PhasePause {
+			pauseCount++
+		}
 	})
 
 	if res.Phase != PhaseDone {
@@ -68,7 +73,13 @@ func TestRunAgainstLocalServer(t *testing.T) {
 	if res.Percent != 100 {
 		t.Fatalf("expected 100%% completion, got %d%%", res.Percent)
 	}
-	if len(phases) < 4 {
+	if pauseCount < 2 {
+		t.Fatalf("expected PhasePause transitions between stages, got %d (phases=%v)", pauseCount, phases)
+	}
+	if len(res.Samples) == 0 {
+		t.Fatal("expected non-empty throughput samples for live waveform")
+	}
+	if len(phases) < 6 {
 		t.Fatalf("expected multiple progress updates, got %v", phases)
 	}
 }
@@ -96,5 +107,37 @@ func TestRunCancellation(t *testing.T) {
 
 	if res.Phase != PhaseCancelled {
 		t.Fatalf("expected PhaseCancelled, got %s (err=%q)", res.Phase, res.Error)
+	}
+}
+
+func TestDefaultOptionsIndustryStandards(t *testing.T) {
+	opts := DefaultOptions().withDefaults()
+	if opts.PingCount < 8 {
+		t.Fatalf("expected PingCount >= 8, got %d", opts.PingCount)
+	}
+	if opts.DownloadDuration < 8*time.Second {
+		t.Fatalf("expected DownloadDuration >= 8s, got %v", opts.DownloadDuration)
+	}
+	if opts.UploadDuration < 8*time.Second {
+		t.Fatalf("expected UploadDuration >= 8s, got %v", opts.UploadDuration)
+	}
+	if opts.Warmup < 1500*time.Millisecond || opts.Warmup >= opts.DownloadDuration {
+		t.Fatalf("unexpected Warmup %v for duration %v", opts.Warmup, opts.DownloadDuration)
+	}
+	if opts.Streams < 4 {
+		t.Fatalf("expected Streams >= 4, got %d", opts.Streams)
+	}
+	if opts.PhaseGap != 1500*time.Millisecond {
+		t.Fatalf("expected PhaseGap == 1.5s, got %v", opts.PhaseGap)
+	}
+	if opts.DownloadBytes >= 100_000_000 {
+		t.Fatalf("DownloadBytes %d exceeds Cloudflare <100MB request limit", opts.DownloadBytes)
+	}
+	if opts.UploadChunkBytes < 4_000_000 {
+		t.Fatalf("expected UploadChunkBytes >= 4MB to avoid per-MB RTT stalls, got %d", opts.UploadChunkBytes)
+	}
+	tr, ok := opts.Client.Transport.(*http.Transport)
+	if !ok || tr.TLSNextProto == nil {
+		t.Fatal("expected HTTP/2 disabled (non-nil empty TLSNextProto) for true parallel TCP streams")
 	}
 }

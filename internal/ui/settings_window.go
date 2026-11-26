@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/WhatsMySpeed/WhatsMySpeed/assets"
@@ -19,8 +20,10 @@ const (
 	repoURL           = "https://github.com/theshubh77/WhatsMySpeed"
 	linkedinURL       = "https://www.linkedin.com/in/theshubh77"
 
-	baseWindowW = 626
-	baseWindowH = 756
+	baseWindowW    = 626
+	baseWindowH    = 756
+	timerAnimID    = 10
+	animIntervalMs = 16
 )
 
 type controlAction int
@@ -195,11 +198,16 @@ type SettingsWindow struct {
 	resDPI         uint32
 	resLight       bool
 
-	// Speed test runtime state.
-	stMu       sync.Mutex
-	stRunning  bool
-	stCancel   context.CancelFunc
-	stProgress speedtest.Progress
+	// Speed test runtime state & 60fps gauge smoothing.
+	stMu          sync.Mutex
+	stRunning     bool
+	stCancel      context.CancelFunc
+	stProgress    speedtest.Progress
+	animTimerOn   bool
+	animLastTick  time.Time
+	animGaugeFrac float64
+	animDisplay   float64
+	pulsePhase    float64
 }
 
 // NewSettingsWindow creates a SettingsWindow bound to app.
@@ -274,6 +282,7 @@ func (w *SettingsWindow) CancelSpeedTest() {
 
 // Destroy releases window handles and GDI/GDI+ resources.
 func (w *SettingsWindow) Destroy() {
+	w.stopAnimTimer()
 	w.CancelSpeedTest()
 	w.releaseDrawResources()
 	if w.hwnd != 0 {
@@ -492,7 +501,14 @@ func (w *SettingsWindow) handleMessage(message uint32, wParam, lParam uintptr) u
 		return 0
 
 	case wmSpeedTestUpdate:
+		w.startAnimTimer()
 		w.invalidate()
+		return 0
+
+	case wmTimer:
+		if wParam == timerAnimID {
+			w.stepAnimation()
+		}
 		return 0
 
 	case wmPaint:
@@ -505,6 +521,8 @@ func (w *SettingsWindow) handleMessage(message uint32, wParam, lParam uintptr) u
 		return 0
 
 	case wmClose:
+		w.stopAnimTimer()
+		w.CancelSpeedTest()
 		_, _, _ = procShowWindow.Call(w.hwnd, swHide)
 		return 0
 	}
@@ -598,6 +616,91 @@ func openExternalURL(hwnd uintptr, rawURL string) {
 	)
 }
 
+func (w *SettingsWindow) startAnimTimer() {
+	if w.hwnd == 0 {
+		return
+	}
+	if !w.animTimerOn {
+		w.animLastTick = time.Now()
+		w.animTimerOn = true
+		_, _, _ = procSetTimer.Call(w.hwnd, timerAnimID, animIntervalMs, 0)
+	}
+}
+
+func (w *SettingsWindow) stopAnimTimer() {
+	if w.animTimerOn {
+		if w.hwnd != 0 {
+			_, _, _ = procKillTimer.Call(w.hwnd, timerAnimID)
+		}
+		w.animTimerOn = false
+	}
+}
+
+func targetGaugeState(p speedtest.Progress) (frac float64, val float64) {
+	switch p.Phase {
+	case speedtest.PhasePing:
+		t := float64(p.Percent) / 10.0
+		if t < 0 {
+			t = 0
+		} else if t > 1 {
+			t = 1
+		}
+		return 0.06 + t*0.14, p.PingMs
+	case speedtest.PhasePause:
+		switch p.CompletedPhase {
+		case speedtest.PhasePing:
+			return 0, p.PingMs
+		case speedtest.PhaseDownload:
+			return 0, 0
+		case speedtest.PhaseUpload:
+			return speedToGaugeFraction(p.UploadMbps), p.UploadMbps
+		default:
+			return 0, 0
+		}
+	case speedtest.PhaseDownload:
+		return speedToGaugeFraction(p.DownloadMbps), p.DownloadMbps
+	case speedtest.PhaseUpload:
+		return speedToGaugeFraction(p.UploadMbps), p.UploadMbps
+	case speedtest.PhaseDone:
+		return 0, 0
+	default:
+		return 0, 0
+	}
+}
+
+func (w *SettingsWindow) stepAnimation() {
+	now := time.Now()
+	dt := now.Sub(w.animLastTick).Seconds()
+	if dt < 0.004 {
+		dt = 0.004
+	} else if dt > 0.05 {
+		dt = 0.05
+	}
+	w.animLastTick = now
+
+	w.stMu.Lock()
+	p := w.stProgress
+	running := w.stRunning
+	w.stMu.Unlock()
+
+	targetFrac, targetVal := targetGaugeState(p)
+	tau := 0.10
+	if p.Phase == speedtest.PhasePause {
+		tau = 0.13
+	}
+	alpha := 1.0 - math.Exp(-dt/tau)
+	w.animGaugeFrac += (targetFrac - w.animGaugeFrac) * alpha
+	w.animDisplay += (targetVal - w.animDisplay) * alpha
+	w.pulsePhase += dt * 4.2
+
+	if !running && math.Abs(targetFrac-w.animGaugeFrac) < 0.002 && math.Abs(targetVal-w.animDisplay) < 0.05 {
+		w.animGaugeFrac = targetFrac
+		w.animDisplay = targetVal
+		w.stopAnimTimer()
+	}
+	w.invalidate()
+}
+
 func (w *SettingsWindow) startSpeedTest() {
 	w.stMu.Lock()
 	if w.stRunning {
@@ -612,6 +715,10 @@ func (w *SettingsWindow) startSpeedTest() {
 		Percent: 2,
 	}
 	w.stMu.Unlock()
+	w.animGaugeFrac = 0
+	w.animDisplay = 0
+	w.pulsePhase = 0
+	w.startAnimTimer()
 	w.invalidate()
 
 	go func() {
@@ -1124,42 +1231,69 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		gpFillRoundedRect(gfx, bTick, tx, ty, tickSize, tickSize, tickSize/2)
 	}
 
+	rawFrac, rawVal := targetGaugeState(stProg)
+	gaugeFrac := rawFrac
+	displayVal := rawVal
+	if w.animTimerOn {
+		gaugeFrac = w.animGaugeFrac
+		displayVal = w.animDisplay
+	}
+	if gaugeFrac < 0 {
+		gaugeFrac = 0
+	} else if gaugeFrac > 1 {
+		gaugeFrac = 1
+	}
+
 	phaseLabel := "READY"
 	heroValue := "—"
 	heroUnit := "Mbps"
-	var gaugeFrac float64
 
 	switch stProg.Phase {
 	case speedtest.PhasePing:
 		phaseLabel = "PING"
-		if stProg.PingMs > 0 {
-			heroValue = fmt.Sprintf("%.0f", stProg.PingMs)
+		if displayVal > 0 {
+			heroValue = fmt.Sprintf("%.0f", displayVal)
 		}
 		heroUnit = "ms"
-		gaugeFrac = float64(stProg.Percent) / 15.0 * 0.25
+	case speedtest.PhasePause:
+		switch stProg.CompletedPhase {
+		case speedtest.PhasePing:
+			phaseLabel = "PING"
+			if displayVal > 0 {
+				heroValue = fmt.Sprintf("%.0f", displayVal)
+			}
+			heroUnit = "ms"
+		case speedtest.PhaseDownload:
+			phaseLabel = "PREPARING"
+			heroValue = "—"
+			heroUnit = "Mbps"
+		case speedtest.PhaseUpload:
+			phaseLabel = "UPLOAD"
+			heroValue = fmt.Sprintf("%.1f", displayVal)
+			heroUnit = "Mbps"
+		default:
+			phaseLabel = "PREPARING"
+		}
 	case speedtest.PhaseDownload:
 		phaseLabel = "DOWNLOAD"
-		heroValue = fmt.Sprintf("%.1f", stProg.DownloadMbps)
+		heroValue = fmt.Sprintf("%.1f", displayVal)
 		heroUnit = "Mbps"
-		gaugeFrac = speedToGaugeFraction(stProg.DownloadMbps)
 	case speedtest.PhaseUpload:
 		phaseLabel = "UPLOAD"
-		heroValue = fmt.Sprintf("%.1f", stProg.UploadMbps)
+		heroValue = fmt.Sprintf("%.1f", displayVal)
 		heroUnit = "Mbps"
-		gaugeFrac = speedToGaugeFraction(stProg.UploadMbps)
 	case speedtest.PhaseDone:
-		phaseLabel = "DOWNLOAD"
-		heroValue = fmt.Sprintf("%.1f", stProg.DownloadMbps)
+		phaseLabel = "COMPLETED"
+		heroValue = "—"
 		heroUnit = "Mbps"
-		gaugeFrac = speedToGaugeFraction(stProg.DownloadMbps)
 	case speedtest.PhaseCancelled:
 		phaseLabel = "CANCELLED"
 	case speedtest.PhaseError:
-		phaseLabel = "OFFLINE"
+		phaseLabel = "FAILED"
 		heroUnit = ""
 	}
 
-	if gaugeFrac > 0 {
+	if gaugeFrac > 0.002 {
 		if activePath, err := buildGaugeArcPath(gaugeCX, gaugeCY, rOuter, rInner, 135.0, gaugeFrac*270.0); err == nil && activePath != 0 {
 			x0 := int32(math.Round(gaugeCX - rOuter))
 			y0 := int32(math.Round(gaugeCY - rOuter))
@@ -1202,7 +1336,7 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		pingTxt = fmt.Sprintf("Ping  %.0f ms", stProg.PingMs)
 	}
 	dlTxt := "—"
-	if stProg.DownloadMbps > 0 || stProg.Phase == speedtest.PhaseDone {
+	if stProg.DownloadMbps > 0 || stProg.Phase == speedtest.PhaseDone || stProg.Phase == speedtest.PhaseUpload || (stProg.Phase == speedtest.PhasePause && stProg.CompletedPhase != speedtest.PhasePing) {
 		dlTxt = fmt.Sprintf("%.1f Mbps", stProg.DownloadMbps)
 	}
 	ulTxt := "—"
