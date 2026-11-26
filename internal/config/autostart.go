@@ -22,6 +22,10 @@ func FormatAutoStartCommand(exePath string) string {
 
 // IsAutoStartEnabled reports whether WhatsMySpeed is registered to launch on Windows sign-in.
 func IsAutoStartEnabled() (bool, error) {
+	if IsPackaged() {
+		return isMSIXStartupEnabled()
+	}
+
 	key, err := registry.OpenKey(registry.CURRENT_USER, runRegistryPath, registry.QUERY_VALUE)
 	if err != nil {
 		if errors.Is(err, registry.ErrNotExist) {
@@ -41,8 +45,13 @@ func IsAutoStartEnabled() (bool, error) {
 	return val != "", nil
 }
 
-// SetAutoStart adds or removes the HKCU\...\Run entry for the current executable.
+// SetAutoStart updates startup registration via MSIX StartupTask when packaged
+// or HKCU\...\Run when running unpackaged.
 func SetAutoStart(enabled bool) error {
+	if IsPackaged() {
+		return setMSIXStartupEnabled(enabled)
+	}
+
 	if !enabled {
 		key, err := registry.OpenKey(registry.CURRENT_USER, runRegistryPath, registry.SET_VALUE)
 		if err != nil {

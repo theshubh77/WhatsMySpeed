@@ -54,7 +54,7 @@ func startsInTray(args []string) bool {
 }
 
 func main() {
-	openOnLaunch := !startsInTray(os.Args[1:])
+	openOnLaunch := !startsInTray(os.Args[1:]) && !config.IsPackagedStartupLaunch()
 
 	mutex, ok := acquireSingleInstance()
 	if !ok {

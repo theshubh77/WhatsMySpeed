@@ -8,8 +8,10 @@
 *.out
 /dist/
 /build/
+/tools/
 
-# IDE and OS files
+# IDE, OS, and local agent files
+AGENTS.md
 .vscode/
 .idea/
 Thumbs.db

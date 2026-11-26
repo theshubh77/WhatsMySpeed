@@ -318,7 +318,7 @@ func LoadAndSyncStartup(path string) (Config, error) {
 	}
 
 	regEnabled, rErr := queryAutoStart()
-	if rErr != nil || regEnabled != cfg.StartWithWindows || cfg.StartWithWindows {
+	if rErr != nil || regEnabled != cfg.StartWithWindows || (!IsPackaged() && cfg.StartWithWindows) {
 		if sErr := applyAutoStart(cfg.StartWithWindows); sErr != nil && rErr == nil {
 			cfg.StartWithWindows = regEnabled
 		}

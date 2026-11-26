@@ -14,14 +14,14 @@ A lightweight, native Windows 11 real-time internet speed monitor written in pur
 ## Features
 
 - **Real-Time Speed Monitoring:** Polls active, non-loopback network interfaces every second using the Windows IP Helper API (`GetIfTable2`), filtering out NDIS/WFP filter shims to avoid double-counting traffic.
-- **Jitter-Free Smart Formatting:** Automatically scales across **`Bytes/s`** (`B/s`, `KB/s`, `MB/s`, `GB/s`) or **`Bits/s`** (`bps`, `Kbps`, `Mbps`, `Gbps` — matching ISP plans, speed tests, and Task Manager) using fixed-width columns so numbers never jump horizontally as throughput changes.
+- **Jitter-Free Smart Formatting:** Automatically scales across **`Bytes/s`** (`B/s`, `KB/s`, `MB/s`, `GB/s`) or **`Bits/s`** (`bps`, `Kbps`, `Mbps`, `Gbps`, matching ISP plans, speed tests, and Task Manager) using fixed-width columns so numbers never jump horizontally as throughput changes.
 - **Customizable Label Styles & Layouts:**
   - **Label Styles:** `Arrows (↑ ↓)` (Phosphor icons), `U / D`, or `Up / Down`
   - **Taskbar Layouts:** `Stacked (↑/↓)`, `Stacked (↓/↑)`, `Inline` (side-by-side), or `Compact`
   - **Display Modes:** `Show Both`, `Download Only`, `Upload Only`, `Hide Speed`
 - **Built-In Speed Test & Dashboard (`Open WhatsMySpeed`):**
-  - Launch the app icon (`WhatsMySpeed.exe` or shortcut) — whether for the first time or while running — click/double-click the system tray icon, double-click the taskbar speed overlay, or choose **Open WhatsMySpeed** from the tray right-click menu to open the dashboard.
-  - Supports **Light**, **Dark**, and **System** theme icons (with hover tooltips), a live header download/upload badge, and a 270° animated speedometer gauge with multi-stream **Ping** (8 probes), **Download** (8s), and **Upload** (8s) phases separated by clean 1.5s intervals — resetting the gauge upon completion while preserving Ping, Download, and Upload summary pills (`Run Speed Test` / `Cancel` / `Test Again`).
+  - Launch the app icon (`WhatsMySpeed.exe` or shortcut, whether for the first time or while running), click/double-click the system tray icon, double-click the taskbar speed overlay, or choose **Open WhatsMySpeed** from the tray right-click menu to open the dashboard.
+  - Supports **Light**, **Dark**, and **System** theme icons (with hover tooltips), a live header download/upload badge, and a 270° animated speedometer gauge with multi-stream **Ping** (8 probes), **Download** (8s), and **Upload** (8s) phases separated by clean 1.5s intervals (resetting the gauge upon completion while preserving Ping, Download, and Upload summary pills (`Run Speed Test` / `Cancel` / `Test Again`)).
   - Interactive capsule controls for every preference (`Show`, `Label`, `Layout`, `Unit`, `Theme`, `Start with Windows`), plus **GitHub** (`https://github.com/theshubh77/WhatsMySpeed`), **Sponsor**, and **Shubham Bhamare** ([LinkedIn](https://www.linkedin.com/in/theshubh77)) links.
 - **Native Windows 11 Integration:**
   - Docks cleanly inside `Shell_TrayWnd` beside `TrayNotifyWnd` as a zero-focus-stealing transparent layered window (with automatic topmost fallback when needed), keeping proper taskbar Z-order even over Quick Settings, Start, and Alt+Tab.
@@ -47,10 +47,11 @@ WhatsMySpeed/
 │       └── rsrc_windows_amd64.syso # Pre-compiled Windows resources linked by go build
 ├── internal/
 │   ├── config/
-│   │   ├── autostart.go        # Windows startup registry management
-│   │   └── config.go           # JSON settings persistence (%APPDATA%\WhatsMySpeed\config.json)
+│   │   ├── autostart.go        # Windows startup management (HKCU Run + MSIX StartupTask)
+│   │   ├── config.go           # JSON settings persistence (%APPDATA%\WhatsMySpeed\config.json)
+│   │   └── msix.go             # WinRT StartupTask & MSIX activation detection
 │   ├── network/
-│   │   ├── format.go           # Smart unit formatting (B/s–GB/s and bps–Gbps)
+│   │   ├── format.go           # Smart unit formatting (B/s to GB/s and bps to Gbps)
 │   │   └── monitor.go          # Win32 GetIfTable2 bandwidth sampler
 │   ├── speedtest/
 │   │   └── speedtest.go        # Multi-stream Ping, Download & Upload speed test
@@ -63,9 +64,13 @@ WhatsMySpeed/
 │       ├── theme.go            # Windows 11 Light/Dark taskbar theme detection
 │       ├── tray.go             # Shell_NotifyIconW system tray & context menu
 │       └── win32.go            # Win32 syscalls & DPI awareness
+├── installer/
+│   └── msix/                   # AppxManifest.xml & Store visual tile PNG assets
 ├── build.ps1                   # Standalone Windows GUI build script
+├── build-msix.ps1              # Microsoft Store MSIX staging & packaging script
 ├── go.mod
 ├── LICENSE
+├── PRIVACY.md
 └── README.md
 ```
 
@@ -91,6 +96,20 @@ go build -trimpath -ldflags="-s -w -H=windowsgui" -o WhatsMySpeed.exe ./cmd/what
 ```
 
 > `-H=windowsgui` builds a native GUI subsystem executable so no console window appears on launch. `build.ps1` also automatically recompiles `rsrc_windows_amd64.syso` from `app.rc` if `x86_64-w64-mingw32-windres` is available on `PATH`.
+
+### Building MSIX Package
+
+```powershell
+.\build-msix.ps1
+```
+
+To customize package identity for Microsoft Store or signed distribution:
+
+```powershell
+.\build-msix.ps1 -IdentityName "YourPublisher.WhatsMySpeed" -Publisher "CN=YOUR_PUBLISHER_ID" -PublisherDisplayName "Your Publisher Name" -Version "1.0.0.0"
+```
+
+See [PRIVACY.md](PRIVACY.md) for the application privacy policy.
 
 ### Running Tests
 
@@ -120,7 +139,7 @@ Example:
 ```
 
 - `display_mode`: `"both"`, `"download"`, `"upload"`, `"hide"`
-- `speed_unit`: `"bytes"` (`B/s`–`GB/s`, default) or `"bits"` (`bps`–`Gbps`)
+- `speed_unit`: `"bytes"` (`B/s` to `GB/s`, default) or `"bits"` (`bps` to `Gbps`)
 - `label_style`: `"arrows"` (Phosphor icons, default), `"ud"` (`U` / `D`), or `"words"` (`Up` / `Down`)
 - `layout`: `"stacked_up"` (default), `"stacked_down"`, `"inline"`, or `"compact"`
 - `theme`: `"system"` (default), `"dark"`, or `"light"`
@@ -132,7 +151,7 @@ Contributions, bug reports, and pull requests are welcome! Please run `go test .
 
 ## Author
 
-- **Shubham Bhamare** — [LinkedIn](https://www.linkedin.com/in/theshubh77) · [GitHub](https://github.com/theshubh77)
+- **Shubham Bhamare** ([LinkedIn](https://www.linkedin.com/in/theshubh77) · [GitHub](https://github.com/theshubh77))
 
 ## Sponsor
 

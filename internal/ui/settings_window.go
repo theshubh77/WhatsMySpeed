@@ -1283,7 +1283,7 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	}
 
 	phaseLabel := "READY"
-	heroValue := "—"
+	heroValue := "--"
 	heroUnit := "Mbps"
 
 	switch stProg.Phase {
@@ -1303,7 +1303,7 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 			heroUnit = "ms"
 		case speedtest.PhaseDownload:
 			phaseLabel = "PREPARING"
-			heroValue = "—"
+			heroValue = "--"
 			heroUnit = "Mbps"
 		case speedtest.PhaseUpload:
 			phaseLabel = "UPLOAD"
@@ -1322,7 +1322,7 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		heroUnit = "Mbps"
 	case speedtest.PhaseDone:
 		phaseLabel = "COMPLETED"
-		heroValue = "—"
+		heroValue = "--"
 		heroUnit = "Mbps"
 	case speedtest.PhaseCancelled:
 		phaseLabel = "CANCELLED"
@@ -1369,15 +1369,15 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	metricPad := s(20)
 	metricW := (cardW - metricPad*2 - metricGap*2) / 3
 
-	pingTxt := "Ping  —"
+	pingTxt := "Ping  --"
 	if stProg.PingMs > 0 {
 		pingTxt = fmt.Sprintf("Ping  %.0f ms", stProg.PingMs)
 	}
-	dlTxt := "—"
+	dlTxt := "--"
 	if stProg.DownloadMbps > 0 || stProg.Phase == speedtest.PhaseDone || stProg.Phase == speedtest.PhaseUpload || (stProg.Phase == speedtest.PhasePause && stProg.CompletedPhase != speedtest.PhasePing) {
 		dlTxt = fmt.Sprintf("%.1f Mbps", stProg.DownloadMbps)
 	}
-	ulTxt := "—"
+	ulTxt := "--"
 	if stProg.UploadMbps > 0 || stProg.Phase == speedtest.PhaseDone {
 		ulTxt = fmt.Sprintf("%.1f Mbps", stProg.UploadMbps)
 	}
