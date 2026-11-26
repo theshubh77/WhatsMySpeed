@@ -806,15 +806,11 @@ func DecodePNGToBitmap(pngData []byte, width, height int32) (uintptr, []byte, er
 		return 0, nil, fmt.Errorf("empty PNG image")
 	}
 
-	// Convert to premultiplied RGBA first, then swizzle RGBA -> BGRA for GDI+ 32bppPARGB.
+	// Convert to premultiplied RGBA, then swizzle RGBA -> BGRA in place for GDI+ 32bppPARGB.
 	rgba := image.NewRGBA(image.Rect(0, 0, srcW, srcH))
 	draw.Draw(rgba, rgba.Bounds(), img, bounds.Min, draw.Src)
-	srcBuf := make([]byte, len(rgba.Pix))
 	for i := 0; i < len(rgba.Pix); i += 4 {
-		srcBuf[i+0] = rgba.Pix[i+2] // B
-		srcBuf[i+1] = rgba.Pix[i+1] // G
-		srcBuf[i+2] = rgba.Pix[i+0] // R
-		srcBuf[i+3] = rgba.Pix[i+3] // A
+		rgba.Pix[i+0], rgba.Pix[i+2] = rgba.Pix[i+2], rgba.Pix[i+0]
 	}
 
 	var srcBmp uintptr
@@ -823,7 +819,7 @@ func DecodePNGToBitmap(pngData []byte, width, height int32) (uintptr, []byte, er
 		uintptr(srcH),
 		uintptr(srcW*4),
 		gpPixelFormat32bppPARGB,
-		uintptr(unsafe.Pointer(&srcBuf[0])),
+		uintptr(unsafe.Pointer(&rgba.Pix[0])),
 		uintptr(unsafe.Pointer(&srcBmp)),
 	)
 	if st != 0 || srcBmp == 0 {
@@ -857,7 +853,7 @@ func DecodePNGToBitmap(pngData []byte, width, height int32) (uintptr, []byte, er
 	_, _, _ = procGdipSetSmoothingMode.Call(gfx, gpSmoothingModeHighQuality)
 	_, _, _ = procGdipSetInterpolationMode.Call(gfx, gpInterpolationModeHighQualityBicubic)
 	_, _, _ = procGdipDrawImageRectI.Call(gfx, srcBmp, 0, 0, uintptr(width), uintptr(height))
-	_ = srcBuf
+	_ = rgba.Pix
 	return dstBmp, dstBuf, nil
 }
 

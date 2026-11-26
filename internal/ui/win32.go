@@ -38,7 +38,6 @@ const (
 	wmSetIcon       = 0x0080
 	wmTimer         = 0x0113
 	wmMouseMove     = 0x0200
-	wmLButtonDown   = 0x0201
 	wmLButtonUp     = 0x0202
 	wmLButtonDblClk = 0x0203
 	wmRButtonUp     = 0x0205
@@ -78,8 +77,6 @@ const (
 
 	smCxScreen = 0
 	smCyScreen = 1
-	smCxIcon   = 11
-	smCyIcon   = 12
 	smCxSmIcon = 49
 	smCySmIcon = 50
 
@@ -107,22 +104,18 @@ const (
 	winEventSkipOwnProcess = 0x0002
 
 	eventSystemForeground     = 0x0003
-	eventSystemCaptureStart   = 0x0008
 	eventSystemCaptureEnd     = 0x0009
 	eventObjectReorder        = 0x8004
 	eventObjectLocationChange = 0x800B
 	objidWindow               = 0
 
-	nimAdd        = 0x00000000
-	nimModify     = 0x00000001
-	nimDelete     = 0x00000002
-	nimSetVersion = 0x00000004
+	nimAdd    = 0x00000000
+	nimModify = 0x00000001
+	nimDelete = 0x00000002
 
 	nifMessage = 0x00000001
 	nifIcon    = 0x00000002
 	nifTip     = 0x00000004
-
-	notifyIconVersion4 = 4
 
 	miimState   = 0x00000001
 	miimID      = 0x00000002

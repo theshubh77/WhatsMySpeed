@@ -141,7 +141,11 @@ func maxDuration(a, b time.Duration) time.Duration {
 
 // Run executes Ping, multi-stream Download, and multi-stream Upload sequentially.
 func Run(ctx context.Context, opts Options, onProgress func(Progress)) Progress {
+	ownClient := opts.Client == nil
 	opts = opts.withDefaults()
+	if ownClient && opts.Client != nil {
+		defer opts.Client.CloseIdleConnections()
+	}
 	emit := func(p Progress) {
 		if onProgress != nil {
 			onProgress(p)

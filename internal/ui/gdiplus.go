@@ -10,17 +10,15 @@ import (
 const (
 	gpPixelFormat32bppPARGB = 0x000E200B
 
-	gpSmoothingModeHighQuality           = 2
+	gpSmoothingModeHighQuality            = 2
 	gpInterpolationModeHighQualityBicubic = 7
-	gpTextRenderingHintAntiAliasGridFit  = 3
-	gpTextRenderingHintAntiAlias         = 4
-	gpFillModeWinding                 = 1
-	gpStringAlignmentNear             = 0
-	gpStringAlignmentCenter           = 1
-	gpStringAlignmentFar              = 2
-	gpStringFormatFlagsNoWrap         = 0x00001000
-	gpStringFormatFlagsNoClip         = 0x00004000
-	gpStringFormatFlagsMeasureTrail   = 0x00000800
+	gpTextRenderingHintAntiAliasGridFit   = 3
+	gpFillModeWinding                     = 1
+	gpStringAlignmentNear                 = 0
+	gpStringAlignmentCenter               = 1
+	gpStringAlignmentFar                  = 2
+	gpStringFormatFlagsNoWrap             = 0x00001000
+	gpStringFormatFlagsNoClip             = 0x00004000
 )
 
 var (
@@ -60,7 +58,6 @@ var (
 	procGdipClosePathFigure           = modGdiplus.NewProc("GdipClosePathFigure")
 	procGdipAddPathLineI              = modGdiplus.NewProc("GdipAddPathLineI")
 	procGdipAddPathBeziersI           = modGdiplus.NewProc("GdipAddPathBeziersI")
-	procGdipAddPathArcI               = modGdiplus.NewProc("GdipAddPathArcI")
 	procGdipFillPath                  = modGdiplus.NewProc("GdipFillPath")
 	procGdipCreateMatrix3I            = modGdiplus.NewProc("GdipCreateMatrix3I")
 	procGdipDeleteMatrix              = modGdiplus.NewProc("GdipDeleteMatrix")

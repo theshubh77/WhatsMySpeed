@@ -207,7 +207,6 @@ type SettingsWindow struct {
 	animLastTick  time.Time
 	animGaugeFrac float64
 	animDisplay   float64
-	pulsePhase    float64
 }
 
 // NewSettingsWindow creates a SettingsWindow bound to app.
@@ -254,23 +253,28 @@ func (w *SettingsWindow) Show(startSpeedTest bool) {
 	}
 }
 
+func (w *SettingsWindow) isVisible() bool {
+	if w.hwnd == 0 {
+		return false
+	}
+	vis, _, _ := procIsWindowVisible.Call(w.hwnd)
+	return vis != 0
+}
+
 // RefreshAppearance forces a repaint and syncs title bar theme.
 func (w *SettingsWindow) RefreshAppearance() {
 	if w.hwnd == 0 {
 		return
 	}
 	w.applyTitleBarTheme()
-	if vis, _, _ := procIsWindowVisible.Call(w.hwnd); vis != 0 {
+	if w.isVisible() {
 		w.invalidate()
 	}
 }
 
 // NotifySampleUpdated refreshes the live header readout when the window is visible.
 func (w *SettingsWindow) NotifySampleUpdated() {
-	if w.hwnd == 0 {
-		return
-	}
-	if vis, _, _ := procIsWindowVisible.Call(w.hwnd); vis != 0 {
+	if w.isVisible() {
 		w.invalidate()
 	}
 }
@@ -506,6 +510,17 @@ func (w *SettingsWindow) handleMessage(message uint32, wParam, lParam uintptr) u
 		return 0
 
 	case wmSpeedTestUpdate:
+		if !w.isVisible() {
+			w.stMu.Lock()
+			p := w.stProgress
+			running := w.stRunning
+			w.stMu.Unlock()
+			if !running {
+				w.animGaugeFrac, w.animDisplay = targetGaugeState(p)
+				w.stopAnimTimer()
+			}
+			return 0
+		}
 		w.startAnimTimer()
 		w.invalidate()
 		return 0
@@ -529,6 +544,7 @@ func (w *SettingsWindow) handleMessage(message uint32, wParam, lParam uintptr) u
 		w.stopAnimTimer()
 		w.CancelSpeedTest()
 		_, _, _ = procShowWindow.Call(w.hwnd, swHide)
+		w.releaseDrawResources()
 		return 0
 	}
 
@@ -706,7 +722,15 @@ func (w *SettingsWindow) stepAnimation() {
 	alpha := 1.0 - math.Exp(-dt/tau)
 	w.animGaugeFrac += (targetFrac - w.animGaugeFrac) * alpha
 	w.animDisplay += (targetVal - w.animDisplay) * alpha
-	w.pulsePhase += dt * 4.2
+
+	if !w.isVisible() {
+		if !running {
+			w.animGaugeFrac = targetFrac
+			w.animDisplay = targetVal
+			w.stopAnimTimer()
+		}
+		return
+	}
 
 	if !running && math.Abs(targetFrac-w.animGaugeFrac) < 0.002 && math.Abs(targetVal-w.animDisplay) < 0.05 {
 		w.animGaugeFrac = targetFrac
@@ -732,7 +756,6 @@ func (w *SettingsWindow) startSpeedTest() {
 	w.stMu.Unlock()
 	w.animGaugeFrac = 0
 	w.animDisplay = 0
-	w.pulsePhase = 0
 	w.startAnimTimer()
 	w.invalidate()
 
@@ -1644,6 +1667,7 @@ func (w *SettingsWindow) releaseFontAndIconResources() {
 	w.githubBuf, w.heartBuf, w.madeHeartBuf = nil, nil, nil
 	w.dlSmallBuf, w.ulSmallBuf = nil, nil
 	w.dlMetricBuf, w.ulMetricBuf = nil, nil
+	w.resDPI = 0
 }
 
 func (w *SettingsWindow) releaseDrawResources() {

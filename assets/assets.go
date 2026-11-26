@@ -13,16 +13,9 @@ var AppLogoPNG []byte
 
 // Icon asset paths within the embedded filesystem.
 const (
-	IconArrowUpBold      = "icons/arrow-up-bold.svg"
-	IconArrowDownBold    = "icons/arrow-down-bold.svg"
-	IconGaugeBold        = "icons/gauge-bold.svg"
-	IconArrowsDownUpBold = "icons/arrows-down-up-bold.svg"
-
-	IconArrowUp      = "icons/arrow-up.svg"
-	IconArrowDown    = "icons/arrow-down.svg"
-	IconGauge        = "icons/gauge.svg"
-	IconArrowsDownUp = "icons/arrows-down-up.svg"
-
+	IconArrowUpBold    = "icons/arrow-up-bold.svg"
+	IconArrowDownBold  = "icons/arrow-down-bold.svg"
+	IconGaugeBold      = "icons/gauge-bold.svg"
 	IconSunBold        = "icons/sun-bold.svg"
 	IconMoonBold       = "icons/moon-bold.svg"
 	IconMonitorBold    = "icons/monitor-bold.svg"
