@@ -48,12 +48,22 @@ const (
 	LayoutCompact     OverlayLayout = "compact"      // 2 rows: tighter spacing & compact font
 )
 
+// ThemeMode controls the WhatsMySpeed window theme preference.
+type ThemeMode string
+
+const (
+	ThemeSystem ThemeMode = "system"
+	ThemeDark   ThemeMode = "dark"
+	ThemeLight  ThemeMode = "light"
+)
+
 // Config holds persisted user preferences.
 type Config struct {
 	DisplayMode DisplayMode   `json:"display_mode"`
 	SpeedUnit   SpeedUnit     `json:"speed_unit"`
 	LabelStyle  LabelStyle    `json:"label_style"`
 	Layout      OverlayLayout `json:"layout"`
+	Theme       ThemeMode     `json:"theme"`
 }
 
 // Default returns the default configuration.
@@ -63,6 +73,7 @@ func Default() Config {
 		SpeedUnit:   UnitBytes,
 		LabelStyle:  LabelArrows,
 		Layout:      LayoutStackedUp,
+		Theme:       ThemeSystem,
 	}
 }
 
@@ -106,6 +117,16 @@ func ValidLayout(layout OverlayLayout) bool {
 	}
 }
 
+// ValidThemeMode reports whether theme is one of the supported window themes.
+func ValidThemeMode(theme ThemeMode) bool {
+	switch theme {
+	case ThemeSystem, ThemeDark, ThemeLight:
+		return true
+	default:
+		return false
+	}
+}
+
 func normalizeConfig(cfg Config) Config {
 	if !ValidDisplayMode(cfg.DisplayMode) {
 		cfg.DisplayMode = ModeBoth
@@ -118,6 +139,9 @@ func normalizeConfig(cfg Config) Config {
 	}
 	if !ValidLayout(cfg.Layout) {
 		cfg.Layout = LayoutStackedUp
+	}
+	if !ValidThemeMode(cfg.Theme) {
+		cfg.Theme = ThemeSystem
 	}
 	return cfg
 }

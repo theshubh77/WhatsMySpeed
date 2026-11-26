@@ -899,6 +899,9 @@ func (a *App) ApplyConfig(next config.Config) {
 	if !config.ValidLayout(next.Layout) {
 		next.Layout = a.cfg.Layout
 	}
+	if !config.ValidThemeMode(next.Theme) {
+		next.Theme = a.cfg.Theme
+	}
 	if next == a.cfg {
 		return
 	}

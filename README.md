@@ -20,8 +20,8 @@ A lightweight, native Windows 11 real-time internet speed monitor written in pur
   - **Taskbar Layouts:** `Stacked (↑/↓)`, `Stacked (↓/↑)`, `Inline` (side-by-side), or `Compact`
   - **Display Modes:** `Show Both`, `Download Only`, `Upload Only`, `Hide Speed`
 - **Built-In Speed Test & Dashboard (`Open WhatsMySpeed`):**
-  - Click the tray icon, double-click the taskbar overlay, or choose **Open WhatsMySpeed** from the right-click menu to open the native Dark/Light-themed dashboard.
-  - Includes a multi-stream **Speed Test** (Ping, Download Mbps, Upload Mbps) powered by Cloudflare Edge alongside instant live controls for all settings and `Start with Windows`.
+  - Click the tray icon, double-click the taskbar overlay, or choose **Open WhatsMySpeed** from the right-click menu to open the dashboard with Light, Dark, and System theme switching.
+  - Includes a large 270° multi-stream **Speed Test** gauge (Ping, Download Mbps, Upload Mbps) alongside capsule controls for all taskbar settings, `Start with Windows`, GitHub repository link (`https://github.com/theshubh77/WhatsMySpeed`), and Sponsor link.
 - **Native Windows 11 Integration:**
   - Borderless, transparent, click-responsive layered window (`WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_NOACTIVATE`) with zero focus stealing.
   - Automatically docks beside `TrayNotifyWnd` (just left of the `^` chevron) and reacts to taskbar resize, DPI scaling, display changes, Explorer restarts, auto-hide, and fullscreen apps.
@@ -119,6 +119,7 @@ Example:
 - `speed_unit`: `"bytes"` (`B/s`–`GB/s`, default) or `"bits"` (`bps`–`Gbps`)
 - `label_style`: `"arrows"` (Phosphor icons, default), `"ud"` (`U` / `D`), or `"words"` (`Up` / `Down`)
 - `layout`: `"stacked_up"` (default), `"stacked_down"`, `"inline"`, or `"compact"`
+- `theme`: `"system"` (default), `"dark"`, or `"light"`
 
 ## Contributing
 

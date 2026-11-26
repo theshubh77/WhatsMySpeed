@@ -16,9 +16,10 @@ import (
 const (
 	settingsClassName = "WhatsMySpeedDashboardWindow"
 	sponsorURL        = "https://github.com/sponsors/theshubh77"
+	repoURL           = "https://github.com/theshubh77/WhatsMySpeed"
 
-	baseWindowW = 548
-	baseWindowH = 706
+	baseWindowW = 626
+	baseWindowH = 718
 )
 
 type controlAction int
@@ -26,6 +27,9 @@ type controlAction int
 const (
 	actNone controlAction = iota
 	actSpeedTestToggle
+	actThemeLight
+	actThemeDark
+	actThemeSystem
 	actModeBoth
 	actModeDownload
 	actModeUpload
@@ -40,6 +44,7 @@ const (
 	actUnitBytes
 	actUnitBits
 	actAutoStart
+	actGitHub
 	actSponsor
 )
 
@@ -50,6 +55,8 @@ type uiControl struct {
 	selected bool
 	isSwitch bool
 	isButton bool
+	iconBmp  uintptr
+	iconSize int32
 }
 
 type dashboardPalette struct {
@@ -62,6 +69,7 @@ type dashboardPalette struct {
 	brandCyan   uint32
 	brandLime   uint32
 	brandMint   uint32
+	heartPink   uint32
 	accentText  uint32
 	textPrimary uint32
 	textMuted   uint32
@@ -84,9 +92,10 @@ func getDashboardPalette(isLight bool) dashboardPalette {
 			brandCyan:   0xFF0891B2,
 			brandLime:   0xFF65A30D,
 			brandMint:   0xFF0D9488,
+			heartPink:   0xFFDB2777,
 			accentText:  0xFFFFFFFF,
 			textPrimary: 0xFF0F172A,
-			textMuted:   0xFF64748B,
+			textMuted:   0xFF475569,
 			trackBG:     0xFFE2E8F0,
 			tickColor:   0xFFCBD5E1,
 			switchOffBG: 0xFFCBD5E1,
@@ -105,9 +114,10 @@ func getDashboardPalette(isLight bool) dashboardPalette {
 		brandCyan:   0xFF22D3EE,
 		brandLime:   0xFFA3E635,
 		brandMint:   0xFF5EEAD4,
+		heartPink:   0xFFF472B6,
 		accentText:  0xFF07131A,
 		textPrimary: 0xFFF8FAFC,
-		textMuted:   0xFF8E9BB0,
+		textMuted:   0xFF94A3B8,
 		trackBG:     0xFF1D273B,
 		tickColor:   0xFF2E3D59,
 		switchOffBG: 0xFF28354D,
@@ -117,7 +127,7 @@ func getDashboardPalette(isLight bool) dashboardPalette {
 }
 
 // SettingsWindow implements the minimal, brand-styled WhatsMySpeed window with
-// a speedometer gauge and pill-shaped taskbar configuration controls.
+// a speedometer gauge, theme switcher, GitHub link, and taskbar configuration pills.
 type SettingsWindow struct {
 	app        *App
 	hwnd       uintptr
@@ -140,7 +150,7 @@ type SettingsWindow struct {
 	dibW      int32
 	dibH      int32
 
-	// Cached fonts & header icon.
+	// Cached fonts & vector icons.
 	fontTitle      uintptr
 	fontBody       uintptr
 	fontSmall      uintptr
@@ -150,6 +160,22 @@ type SettingsWindow struct {
 	fontPillMetric uintptr
 	logoBmp        uintptr
 	logoBuf        []byte
+	sunBmp         uintptr
+	sunBuf         []byte
+	sunSelBmp      uintptr
+	sunSelBuf      []byte
+	moonBmp        uintptr
+	moonBuf        []byte
+	moonSelBmp     uintptr
+	moonSelBuf     []byte
+	monBmp         uintptr
+	monBuf         []byte
+	monSelBmp      uintptr
+	monSelBuf      []byte
+	githubBmp      uintptr
+	githubBuf      []byte
+	heartBmp       uintptr
+	heartBuf       []byte
 	resDPI         uint32
 	resLight       bool
 
@@ -167,6 +193,17 @@ func NewSettingsWindow(app *App) *SettingsWindow {
 		stProgress: speedtest.Progress{
 			Phase: speedtest.PhaseIdle,
 		},
+	}
+}
+
+func (w *SettingsWindow) isWindowLightTheme() bool {
+	switch w.app.cfg.Theme {
+	case config.ThemeLight:
+		return true
+	case config.ThemeDark:
+		return false
+	default:
+		return DetectTaskbarLightTheme()
 	}
 }
 
@@ -338,7 +375,7 @@ func (w *SettingsWindow) applyTitleBarTheme() {
 		return
 	}
 	var useDark uint32
-	if !DetectTaskbarLightTheme() {
+	if !w.isWindowLightTheme() {
 		useDark = 1
 	}
 	_, _, _ = procDwmSetWindowAttribute.Call(
@@ -482,6 +519,12 @@ func (w *SettingsWindow) handleAction(act controlAction) {
 			w.startSpeedTest()
 		}
 		return
+	case actThemeLight:
+		cfg.Theme = config.ThemeLight
+	case actThemeDark:
+		cfg.Theme = config.ThemeDark
+	case actThemeSystem:
+		cfg.Theme = config.ThemeSystem
 	case actModeBoth:
 		cfg.DisplayMode = config.ModeBoth
 	case actModeDownload:
@@ -512,6 +555,9 @@ func (w *SettingsWindow) handleAction(act controlAction) {
 		enabled, _ := config.IsAutoStartEnabled()
 		_ = config.SetAutoStart(!enabled)
 		w.invalidate()
+		return
+	case actGitHub:
+		openExternalURL(w.hwnd, repoURL)
 		return
 	case actSponsor:
 		openExternalURL(w.hwnd, sponsorURL)
@@ -585,20 +631,34 @@ func (w *SettingsWindow) ensureDrawResources(dpi uint32, isLight bool) {
 		if fam == "" {
 			fam = ResolveTaskbarFontName()
 		}
-		w.fontTitle, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(22, dpi), 700)
-		w.fontBody, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(14, dpi), 600)
-		w.fontSmall, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(13, dpi), 500)
-		w.fontCaps, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(12, dpi), 700)
-		w.fontGaugeHero, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(48, dpi), 700)
-		w.fontGaugeUnit, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(15, dpi), 600)
-		w.fontPillMetric, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(14, dpi), 700)
+		w.fontTitle, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(24, dpi), 700)
+		w.fontBody, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(15, dpi), 600)
+		w.fontSmall, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(14, dpi), 600)
+		w.fontCaps, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(13, dpi), 700)
+		w.fontGaugeHero, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(52, dpi), 700)
+		w.fontGaugeUnit, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(16, dpi), 600)
+		w.fontPillMetric, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(15, dpi), 700)
 
-		iconPx := scaleDPIInt(36, dpi)
-		w.logoBmp, w.logoBuf, _ = DecodePNGToBitmap(assets.AppLogoPNG, iconPx, iconPx)
+		pal := getDashboardPalette(isLight)
+
+		logoPx := scaleDPIInt(42, dpi)
+		w.logoBmp, w.logoBuf, _ = DecodePNGToBitmap(assets.AppLogoPNG, logoPx, logoPx)
 		if w.logoBmp == 0 {
-			pal := getDashboardPalette(isLight)
-			w.logoBmp, w.logoBuf, _ = RasterizeSVGToBitmap(assets.IconGaugeBold, iconPx, iconPx, pal.brandCyan)
+			w.logoBmp, w.logoBuf, _ = RasterizeSVGToBitmap(assets.IconGaugeBold, logoPx, logoPx, pal.brandCyan)
 		}
+
+		thPx := scaleDPIInt(18, dpi)
+		w.sunBmp, w.sunBuf, _ = RasterizeSVGToBitmap(assets.IconSunBold, thPx, thPx, pal.textMuted)
+		w.sunSelBmp, w.sunSelBuf, _ = RasterizeSVGToBitmap(assets.IconSunBold, thPx, thPx, pal.accentText)
+		w.moonBmp, w.moonBuf, _ = RasterizeSVGToBitmap(assets.IconMoonBold, thPx, thPx, pal.textMuted)
+		w.moonSelBmp, w.moonSelBuf, _ = RasterizeSVGToBitmap(assets.IconMoonBold, thPx, thPx, pal.accentText)
+		w.monBmp, w.monBuf, _ = RasterizeSVGToBitmap(assets.IconMonitorBold, thPx, thPx, pal.textMuted)
+		w.monSelBmp, w.monSelBuf, _ = RasterizeSVGToBitmap(assets.IconMonitorBold, thPx, thPx, pal.accentText)
+
+		ghPx := scaleDPIInt(18, dpi)
+		w.githubBmp, w.githubBuf, _ = RasterizeSVGToBitmap(assets.IconGitHubLogoBold, ghPx, ghPx, pal.textPrimary)
+		htPx := scaleDPIInt(17, dpi)
+		w.heartBmp, w.heartBuf, _ = RasterizeSVGToBitmap(assets.IconHeartBold, htPx, htPx, pal.heartPink)
 
 		w.resDPI = dpi
 		w.resLight = isLight
@@ -662,7 +722,7 @@ func (w *SettingsWindow) paintClient(hdc uintptr) {
 	if dpi == 0 {
 		dpi = 96
 	}
-	isLight := DetectTaskbarLightTheme()
+	isLight := w.isWindowLightTheme()
 	w.ensureDrawResources(dpi, isLight)
 	if w.gpBitmap == 0 || w.memDC == 0 {
 		return
@@ -763,19 +823,14 @@ func buildGaugeArcPath(cx, cy, rOuter, rInner, startDeg, sweepDeg float64) (uint
 	rCap := (rOuter - rInner) / 2.0
 
 	_, _, _ = procGdipStartPathFigure.Call(gpPath)
-	// Outer arc clockwise
 	addArcBeziers(cx, cy, rOuter, startDeg, endDeg)
-	// End cap semicircle
 	endRad := endDeg * math.Pi / 180.0
 	addArcBeziers(cx+rMid*math.Cos(endRad), cy+rMid*math.Sin(endRad), rCap, endDeg, endDeg+180.0)
-	// Inner arc counter-clockwise back to start
 	addArcBeziers(cx, cy, rInner, endDeg, startDeg)
-	// Start cap semicircle
 	startRad := startDeg * math.Pi / 180.0
 	addArcBeziers(cx+rMid*math.Cos(startRad), cy+rMid*math.Sin(startRad), rCap, startDeg+180.0, startDeg+360.0)
 	_, _, _ = procGdipClosePathFigure.Call(gpPath)
 
-	// Scale subpixel path back down to 1:1 device pixels using integer matrix.
 	boundW := int32(math.Ceil(cx+rOuter)) + 16
 	boundH := int32(math.Ceil(cy+rOuter)) + 16
 	srcRect := gpRectI{X: 0, Y: 0, Width: boundW * int32(scale), Height: boundH * int32(scale)}
@@ -878,44 +933,118 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 			brush = bPillHover
 		}
 		gpFillRoundedRect(gfx, brush, c.bounds.Left, c.bounds.Top, c.bounds.Width(), c.bounds.Height(), r)
+
+		if c.iconBmp != 0 && c.label != "" {
+			// Icon + text capsule (e.g. GitHub, Sponsor)
+			iconSz := c.iconSize
+			gap := s(8)
+			totalIconArea := iconSz + gap
+			startX := c.bounds.Left + s(16)
+			iconY := c.bounds.Top + (c.bounds.Height()-iconSz)/2
+			_, _, _ = procGdipDrawImageRectI.Call(gfx, c.iconBmp, uintptr(startX), uintptr(iconY), uintptr(iconSz), uintptr(iconSz))
+			gpDrawString(gfx, w.fontSmall, fmtNear, txtBrush, c.label, gpRectF{
+				X: float32(startX + totalIconArea), Y: float32(c.bounds.Top),
+				Width: float32(c.bounds.Width() - s(24) - totalIconArea), Height: float32(c.bounds.Height()),
+			})
+			return
+		}
+
+		if c.iconBmp != 0 {
+			iconSz := c.iconSize
+			ix := c.bounds.Left + (c.bounds.Width()-iconSz)/2
+			iy := c.bounds.Top + (c.bounds.Height()-iconSz)/2
+			_, _, _ = procGdipDrawImageRectI.Call(gfx, c.iconBmp, uintptr(ix), uintptr(iy), uintptr(iconSz), uintptr(iconSz))
+			return
+		}
+
 		gpDrawString(gfx, w.fontSmall, fmtCenter, txtBrush, c.label, gpRectF{
 			X: float32(c.bounds.Left), Y: float32(c.bounds.Top),
 			Width: float32(c.bounds.Width()), Height: float32(c.bounds.Height()),
 		})
 	}
 
-	marginX := s(16)
+	marginX := s(18)
 	cardW := width - marginX*2
 
-	// 1. Minimal Header (Logo + App Name + Live Speed Pill)
+	// 1. Minimal Header (Big Logo + App Name + Live Speed Pill + Light/Dark/System Theme Capsule)
 	hdrY := s(14)
-	iconSz := s(36)
+	iconSz := s(42)
 	if w.logoBmp != 0 {
-		_, _, _ = procGdipDrawImageRectI.Call(gfx, w.logoBmp, uintptr(marginX), uintptr(hdrY+s(1)), uintptr(iconSz), uintptr(iconSz))
+		_, _, _ = procGdipDrawImageRectI.Call(gfx, w.logoBmp, uintptr(marginX), uintptr(hdrY), uintptr(iconSz), uintptr(iconSz))
 	}
 	gpDrawString(gfx, w.fontTitle, fmtNear, bText, config.AppName, gpRectF{
-		X: float32(marginX + iconSz + s(12)), Y: float32(hdrY), Width: float32(s(210)), Height: float32(s(38)),
+		X: float32(marginX + iconSz + s(12)), Y: float32(hdrY), Width: float32(s(190)), Height: float32(iconSz),
 	})
 
-	liveBadgeW := s(248)
-	liveBadgeH := s(34)
-	liveBadgeX := width - marginX - liveBadgeW
-	liveBadgeY := hdrY + s(2)
+	// Theme 3-icon capsule on far right
+	themeSegW := s(34)
+	themeCapPad := s(4)
+	themeCapW := themeSegW*3 + themeCapPad*2
+	themeCapH := s(38)
+	themeCapX := width - marginX - themeCapW
+	themeCapY := hdrY + (iconSz-themeCapH)/2
+	gpFillRoundedRect(gfx, bBadge, themeCapX, themeCapY, themeCapW, themeCapH, themeCapH/2)
+
+	thIconSz := s(18)
+	themeItems := []struct {
+		mode   config.ThemeMode
+		action controlAction
+		bmp    uintptr
+		selBmp uintptr
+	}{
+		{config.ThemeLight, actThemeLight, w.sunBmp, w.sunSelBmp},
+		{config.ThemeDark, actThemeDark, w.moonBmp, w.moonSelBmp},
+		{config.ThemeSystem, actThemeSystem, w.monBmp, w.monSelBmp},
+	}
+	for i, ti := range themeItems {
+		sx := themeCapX + themeCapPad + int32(i)*themeSegW
+		sy := themeCapY + s(3)
+		sh := themeCapH - s(6)
+		selected := w.app.cfg.Theme == ti.mode
+		bmp := ti.bmp
+		if selected {
+			bmp = ti.selBmp
+		}
+		ctrl := uiControl{
+			action:   ti.action,
+			bounds:   rect{Left: sx, Top: sy, Right: sx + themeSegW, Bottom: sy + sh},
+			selected: selected,
+			iconBmp:  bmp,
+			iconSize: thIconSz,
+		}
+		w.controls = append(w.controls, ctrl)
+		if selected {
+			gpFillRoundedRect(gfx, bCyan, sx, sy, themeSegW, sh, sh/2)
+		} else if w.hoveredAct == ti.action {
+			gpFillRoundedRect(gfx, bPillHover, sx, sy, themeSegW, sh, sh/2)
+		}
+		if bmp != 0 {
+			ix := sx + (themeSegW-thIconSz)/2
+			iy := sy + (sh-thIconSz)/2
+			_, _, _ = procGdipDrawImageRectI.Call(gfx, bmp, uintptr(ix), uintptr(iy), uintptr(thIconSz), uintptr(thIconSz))
+		}
+	}
+
+	// Live speed pill immediately left of the theme switcher
+	liveBadgeW := s(222)
+	liveBadgeH := s(38)
+	liveBadgeX := themeCapX - s(10) - liveBadgeW
+	liveBadgeY := themeCapY
 	gpFillRoundedRect(gfx, bBadge, liveBadgeX, liveBadgeY, liveBadgeW, liveBadgeH, liveBadgeH/2)
 
 	dlLive := w.app.formatRate(w.app.currentSample.DownloadBytesPerSec).String()
 	ulLive := w.app.formatRate(w.app.currentSample.UploadBytesPerSec).String()
-	halfBadgeW := (liveBadgeW - s(14)) / 2
+	halfBadgeW := (liveBadgeW - s(12)) / 2
 	gpDrawString(gfx, w.fontSmall, fmtCenter, bCyan, "↓ "+dlLive, gpRectF{
-		X: float32(liveBadgeX + s(7)), Y: float32(liveBadgeY), Width: float32(halfBadgeW), Height: float32(liveBadgeH),
+		X: float32(liveBadgeX + s(6)), Y: float32(liveBadgeY), Width: float32(halfBadgeW), Height: float32(liveBadgeH),
 	})
 	gpDrawString(gfx, w.fontSmall, fmtCenter, bLime, "↑ "+ulLive, gpRectF{
-		X: float32(liveBadgeX + s(7) + halfBadgeW), Y: float32(liveBadgeY), Width: float32(halfBadgeW), Height: float32(liveBadgeH),
+		X: float32(liveBadgeX + s(6) + halfBadgeW), Y: float32(liveBadgeY), Width: float32(halfBadgeW), Height: float32(liveBadgeH),
 	})
 
 	// 2. Big Speedometer Gauge Card
-	stCardY := s(66)
-	stCardH := s(324)
+	stCardY := s(68)
+	stCardH := s(330)
 	drawCard(marginX, stCardY, cardW, stCardH, s(16))
 
 	w.stMu.Lock()
@@ -924,17 +1053,15 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	w.stMu.Unlock()
 
 	gaugeCX := float64(width) / 2.0
-	gaugeCY := float64(stCardY + s(120))
-	rOuter := float64(s(102))
-	rInner := float64(s(86))
+	gaugeCY := float64(stCardY + s(118))
+	rOuter := float64(s(106))
+	rInner := float64(s(89))
 
-	// 270-degree background gauge track (135° to 405°)
 	if trackPath, err := buildGaugeArcPath(gaugeCX, gaugeCY, rOuter, rInner, 135.0, 270.0); err == nil && trackPath != 0 {
 		_, _, _ = procGdipFillPath.Call(gfx, bTrack, trackPath)
 		_, _, _ = procGdipDeletePath.Call(trackPath)
 	}
 
-	// Subtle radial tick dots along the inner arc
 	tickR := rInner - float64(s(10))
 	tickSize := s(4)
 	for i := 0; i <= 8; i++ {
@@ -944,7 +1071,6 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		gpFillRoundedRect(gfx, bTick, tx, ty, tickSize, tickSize, tickSize/2)
 	}
 
-	// Determine active gauge sweep & hero center readout
 	phaseLabel := "READY"
 	heroValue := "—"
 	heroUnit := "Mbps"
@@ -997,25 +1123,23 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		}
 	}
 
-	// Center Hero Typography inside Gauge
 	gpDrawString(gfx, w.fontCaps, fmtCenter, bMuted, phaseLabel, gpRectF{
-		X: float32(gaugeCX) - float32(s(76)), Y: float32(gaugeCY) - float32(s(50)),
-		Width: float32(s(152)), Height: float32(s(18)),
+		X: float32(gaugeCX) - float32(s(80)), Y: float32(gaugeCY) - float32(s(54)),
+		Width: float32(s(160)), Height: float32(s(20)),
 	})
 	gpDrawString(gfx, w.fontGaugeHero, fmtCenter, bText, heroValue, gpRectF{
-		X: float32(gaugeCX) - float32(s(94)), Y: float32(gaugeCY) - float32(s(26)),
-		Width: float32(s(188)), Height: float32(s(52)),
+		X: float32(gaugeCX) - float32(s(100)), Y: float32(gaugeCY) - float32(s(28)),
+		Width: float32(s(200)), Height: float32(s(56)),
 	})
 	if heroUnit != "" {
 		gpDrawString(gfx, w.fontGaugeUnit, fmtCenter, bMuted, heroUnit, gpRectF{
-			X: float32(gaugeCX) - float32(s(66)), Y: float32(gaugeCY) + float32(s(28)),
-			Width: float32(s(132)), Height: float32(s(20)),
+			X: float32(gaugeCX) - float32(s(70)), Y: float32(gaugeCY) + float32(s(30)),
+			Width: float32(s(140)), Height: float32(s(22)),
 		})
 	}
 
-	// Three compact result pills directly beneath the gauge
-	metricY := stCardY + s(218)
-	metricH := s(36)
+	metricY := stCardY + s(220)
+	metricH := s(38)
 	metricGap := s(10)
 	metricPad := s(20)
 	metricW := (cardW - metricPad*2 - metricGap*2) / 3
@@ -1049,11 +1173,10 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		})
 	}
 
-	// Centered capsule Start / Cancel / Test Again button
-	btnW := s(188)
-	btnH := s(42)
+	btnW := s(200)
+	btnH := s(44)
 	btnX := (width - btnW) / 2
-	btnY := stCardY + s(268)
+	btnY := stCardY + s(270)
 	btnLabel := "Start Speed Test"
 	if stRunning {
 		btnLabel = "Cancel"
@@ -1071,15 +1194,15 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	drawPill(stBtn)
 
 	// 3. Minimal Settings Card (4 horizontal label + capsule pill rows)
-	appCardY := stCardY + stCardH + s(14)
-	appCardH := s(216)
+	appCardY := stCardY + stCardH + s(12)
+	appCardH := s(224)
 	drawCard(marginX, appCardY, cardW, appCardH, s(16))
 
 	cfg := w.app.cfg
-	labelColW := s(64)
+	labelColW := s(68)
 	pillStartX := marginX + s(16) + labelColW
 	pillAreaW := cardW - s(32) - labelColW
-	pillH := s(36)
+	pillH := s(38)
 
 	drawInlinePillRow := func(y int32, title string, items []uiControl) {
 		gpDrawString(gfx, w.fontSmall, fmtNear, bMuted, title, gpRectF{
@@ -1096,7 +1219,7 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		}
 	}
 
-	rowStep := s(48)
+	rowStep := s(50)
 	row0Y := appCardY + s(18)
 	drawInlinePillRow(row0Y, "Show", []uiControl{
 		{action: actModeBoth, label: "Both", selected: cfg.DisplayMode == config.ModeBoth},
@@ -1120,20 +1243,20 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		{action: actUnitBits, label: "Bits/s (Mbps)", selected: cfg.SpeedUnit == config.UnitBits},
 	})
 
-	// 4. Clean Minimal Footer Row (Start with Windows switch + Sponsor pill)
-	footY := appCardY + appCardH + s(14)
+	// 4. Clean Footer Row (Start with Windows + GitHub + Sponsor)
+	footY := appCardY + appCardH + s(12)
 	footH := s(58)
 	drawCard(marginX, footY, cardW, footH, s(16))
 
 	autoStart, _ := config.IsAutoStartEnabled()
-	swW := s(44)
-	swH := s(24)
+	swW := s(48)
+	swH := s(26)
 	swX := marginX + s(16)
 	swY := footY + (footH-swH)/2
 
 	w.controls = append(w.controls, uiControl{
 		action:   actAutoStart,
-		bounds:   rect{Left: swX, Top: swY, Right: swX + s(210), Bottom: swY + swH},
+		bounds:   rect{Left: swX, Top: swY, Right: swX + s(220), Bottom: swY + swH},
 		isSwitch: true,
 		selected: autoStart,
 	})
@@ -1142,25 +1265,40 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	knobX := swX + s(3)
 	if autoStart {
 		trackBrush = bCyan
-		knobX = swX + swW - s(21)
+		knobX = swX + swW - s(23)
 	}
 	gpFillRoundedRect(gfx, trackBrush, swX, swY, swW, swH, swH/2)
-	gpFillRoundedRect(gfx, bKnob, knobX, swY+s(3), s(18), s(18), s(9))
+	gpFillRoundedRect(gfx, bKnob, knobX, swY+s(3), s(20), s(20), s(10))
 	gpDrawString(gfx, w.fontSmall, fmtNear, bText, "Start with Windows", gpRectF{
-		X: float32(swX + swW + s(12)), Y: float32(footY), Width: float32(s(170)), Height: float32(footH),
+		X: float32(swX + swW + s(12)), Y: float32(footY), Width: float32(s(175)), Height: float32(footH),
 	})
 
-	spW := s(192)
-	spH := s(36)
+	pillFootH := s(38)
+	pillFootY := footY + (footH-pillFootH)/2
+
+	spW := s(128)
 	spX := marginX + cardW - s(14) - spW
-	spY := footY + (footH-spH)/2
 	spCtrl := uiControl{
-		action: actSponsor,
-		bounds: rect{Left: spX, Top: spY, Right: spX + spW, Bottom: spY + spH},
-		label:  "♥ Sponsor @theshubh77",
+		action:   actSponsor,
+		bounds:   rect{Left: spX, Top: pillFootY, Right: spX + spW, Bottom: pillFootY + pillFootH},
+		label:    "Sponsor",
+		iconBmp:  w.heartBmp,
+		iconSize: s(17),
 	}
 	w.controls = append(w.controls, spCtrl)
 	drawPill(spCtrl)
+
+	ghW := s(116)
+	ghX := spX - s(8) - ghW
+	ghCtrl := uiControl{
+		action:   actGitHub,
+		bounds:   rect{Left: ghX, Top: pillFootY, Right: ghX + ghW, Bottom: pillFootY + pillFootH},
+		label:    "GitHub",
+		iconBmp:  w.githubBmp,
+		iconSize: s(18),
+	}
+	w.controls = append(w.controls, ghCtrl)
+	drawPill(ghCtrl)
 }
 
 func (w *SettingsWindow) releaseDIB() {
@@ -1195,11 +1333,21 @@ func (w *SettingsWindow) releaseFontAndIconResources() {
 			*f = 0
 		}
 	}
-	if w.logoBmp != 0 {
-		_, _, _ = procGdipDisposeImage.Call(w.logoBmp)
-		w.logoBmp = 0
+	for _, b := range []*uintptr{
+		&w.logoBmp, &w.sunBmp, &w.sunSelBmp,
+		&w.moonBmp, &w.moonSelBmp, &w.monBmp, &w.monSelBmp,
+		&w.githubBmp, &w.heartBmp,
+	} {
+		if *b != 0 {
+			_, _, _ = procGdipDisposeImage.Call(*b)
+			*b = 0
+		}
 	}
 	w.logoBuf = nil
+	w.sunBuf, w.sunSelBuf = nil, nil
+	w.moonBuf, w.moonSelBuf = nil, nil
+	w.monBuf, w.monSelBuf = nil, nil
+	w.githubBuf, w.heartBuf = nil, nil
 }
 
 func (w *SettingsWindow) releaseDrawResources() {

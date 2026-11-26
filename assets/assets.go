@@ -22,4 +22,10 @@ const (
 	IconArrowDown    = "icons/arrow-down.svg"
 	IconGauge        = "icons/gauge.svg"
 	IconArrowsDownUp = "icons/arrows-down-up.svg"
+
+	IconSunBold        = "icons/sun-bold.svg"
+	IconMoonBold       = "icons/moon-bold.svg"
+	IconMonitorBold    = "icons/monitor-bold.svg"
+	IconGitHubLogoBold = "icons/github-logo-bold.svg"
+	IconHeartBold      = "icons/heart-bold.svg"
 )

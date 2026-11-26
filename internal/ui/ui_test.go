@@ -51,6 +51,11 @@ func TestEmbeddedPhosphorIconsParseAndRasterize(t *testing.T) {
 		assets.IconArrowDown,
 		assets.IconGauge,
 		assets.IconArrowsDownUp,
+		assets.IconSunBold,
+		assets.IconMoonBold,
+		assets.IconMonitorBold,
+		assets.IconGitHubLogoBold,
+		assets.IconHeartBold,
 	}
 
 	for _, p := range iconPaths {
@@ -343,8 +348,8 @@ func TestSettingsWindowSceneAndHitTest(t *testing.T) {
 			}
 		}
 
-		if len(sw.controls) < 15 {
-			t.Fatalf("expected >=15 interactive controls, got %d", len(sw.controls))
+		if len(sw.controls) < 19 {
+			t.Fatalf("expected >=19 interactive controls, got %d", len(sw.controls))
 		}
 		// Verify every control hit-tests cleanly at its center.
 		for _, c := range sw.controls {

@@ -24,26 +24,30 @@ func TestSaveToAndLoadFromRoundTrip(t *testing.T) {
 	units := []SpeedUnit{UnitBytes, UnitBits}
 	labels := []LabelStyle{LabelArrows, LabelUD, LabelWords}
 	layouts := []OverlayLayout{LayoutStackedUp, LayoutStackedDown, LayoutInline, LayoutCompact}
+	themes := []ThemeMode{ThemeSystem, ThemeDark, ThemeLight}
 
 	for _, mode := range modes {
 		for _, unit := range units {
 			for _, label := range labels {
 				for _, layout := range layouts {
-					want := Config{
-						DisplayMode: mode,
-						SpeedUnit:   unit,
-						LabelStyle:  label,
-						Layout:      layout,
-					}
-					if err := SaveTo(path, want); err != nil {
-						t.Fatalf("SaveTo(%+v) failed: %v", want, err)
-					}
-					got, err := LoadFrom(path)
-					if err != nil {
-						t.Fatalf("LoadFrom(%+v) failed: %v", want, err)
-					}
-					if got != want {
-						t.Fatalf("config mismatch: got %+v, want %+v", got, want)
+					for _, theme := range themes {
+						want := Config{
+							DisplayMode: mode,
+							SpeedUnit:   unit,
+							LabelStyle:  label,
+							Layout:      layout,
+							Theme:       theme,
+						}
+						if err := SaveTo(path, want); err != nil {
+							t.Fatalf("SaveTo(%+v) failed: %v", want, err)
+						}
+						got, err := LoadFrom(path)
+						if err != nil {
+							t.Fatalf("LoadFrom(%+v) failed: %v", want, err)
+						}
+						if got != want {
+							t.Fatalf("config mismatch: got %+v, want %+v", got, want)
+						}
 					}
 				}
 			}
@@ -61,7 +65,7 @@ func TestLoadFromLegacyConfigDefaultsNewFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.DisplayMode != ModeDownload || cfg.SpeedUnit != UnitBytes || cfg.LabelStyle != LabelArrows || cfg.Layout != LayoutStackedUp {
+	if cfg.DisplayMode != ModeDownload || cfg.SpeedUnit != UnitBytes || cfg.LabelStyle != LabelArrows || cfg.Layout != LayoutStackedUp || cfg.Theme != ThemeSystem {
 		t.Fatalf("unexpected config %+v", cfg)
 	}
 }
