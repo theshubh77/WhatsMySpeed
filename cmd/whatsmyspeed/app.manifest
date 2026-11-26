@@ -5,7 +5,7 @@
     processorArchitecture="amd64"
     name="WhatsMySpeed"
     type="win32"/>
-  <description>WhatsMySpeed - Real-Time Internet Speed Monitor for Windows 11</description>
+  <description>WhatsMySpeed | Real-Time Internet Speed Monitor for Windows 11</description>
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>
       <!-- Windows 10 and Windows 11 -->

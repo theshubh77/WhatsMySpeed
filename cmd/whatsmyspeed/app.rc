@@ -17,7 +17,7 @@ BEGIN
       VALUE "Author",           "Shubham Bhamare"
       VALUE "Comments",         "Author: Shubham Bhamare | https://github.com/theshubh77/WhatsMySpeed"
       VALUE "CompanyName",      "WhatsMySpeed Contributors"
-      VALUE "FileDescription",  "WhatsMySpeed - Real-Time Internet Speed Monitor for Windows 11"
+      VALUE "FileDescription",  "WhatsMySpeed | Real-Time Internet Speed Monitor for Windows 11"
       VALUE "FileVersion",      "1.0.0.0"
       VALUE "InternalName",     "WhatsMySpeed"
       VALUE "LegalCopyright",   "Copyright (c) 2026 Shubham Bhamare (MIT License)"
