@@ -17,8 +17,8 @@ const (
 	settingsClassName = "WhatsMySpeedDashboardWindow"
 	sponsorURL        = "https://github.com/sponsors/theshubh77"
 
-	baseWindowW = 500
-	baseWindowH = 648
+	baseWindowW = 548
+	baseWindowH = 706
 )
 
 type controlAction int
@@ -585,15 +585,15 @@ func (w *SettingsWindow) ensureDrawResources(dpi uint32, isLight bool) {
 		if fam == "" {
 			fam = ResolveTaskbarFontName()
 		}
-		w.fontTitle, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(18, dpi), 700)
-		w.fontBody, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(12, dpi), 600)
-		w.fontSmall, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(11, dpi), 500)
-		w.fontCaps, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(10, dpi), 700)
-		w.fontGaugeHero, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(40, dpi), 700)
-		w.fontGaugeUnit, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(13, dpi), 600)
-		w.fontPillMetric, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(13, dpi), 700)
+		w.fontTitle, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(22, dpi), 700)
+		w.fontBody, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(14, dpi), 600)
+		w.fontSmall, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(13, dpi), 500)
+		w.fontCaps, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(12, dpi), 700)
+		w.fontGaugeHero, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(48, dpi), 700)
+		w.fontGaugeUnit, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(15, dpi), 600)
+		w.fontPillMetric, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(14, dpi), 700)
 
-		iconPx := scaleDPIInt(28, dpi)
+		iconPx := scaleDPIInt(36, dpi)
 		w.logoBmp, w.logoBuf, _ = DecodePNGToBitmap(assets.AppLogoPNG, iconPx, iconPx)
 		if w.logoBmp == 0 {
 			pal := getDashboardPalette(isLight)
@@ -889,33 +889,33 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 
 	// 1. Minimal Header (Logo + App Name + Live Speed Pill)
 	hdrY := s(14)
-	iconSz := s(28)
+	iconSz := s(36)
 	if w.logoBmp != 0 {
-		_, _, _ = procGdipDrawImageRectI.Call(gfx, w.logoBmp, uintptr(marginX), uintptr(hdrY+s(2)), uintptr(iconSz), uintptr(iconSz))
+		_, _, _ = procGdipDrawImageRectI.Call(gfx, w.logoBmp, uintptr(marginX), uintptr(hdrY+s(1)), uintptr(iconSz), uintptr(iconSz))
 	}
 	gpDrawString(gfx, w.fontTitle, fmtNear, bText, config.AppName, gpRectF{
-		X: float32(marginX + iconSz + s(10)), Y: float32(hdrY), Width: float32(s(170)), Height: float32(s(32)),
+		X: float32(marginX + iconSz + s(12)), Y: float32(hdrY), Width: float32(s(210)), Height: float32(s(38)),
 	})
 
-	liveBadgeW := s(212)
-	liveBadgeH := s(30)
+	liveBadgeW := s(248)
+	liveBadgeH := s(34)
 	liveBadgeX := width - marginX - liveBadgeW
-	liveBadgeY := hdrY + s(1)
+	liveBadgeY := hdrY + s(2)
 	gpFillRoundedRect(gfx, bBadge, liveBadgeX, liveBadgeY, liveBadgeW, liveBadgeH, liveBadgeH/2)
 
 	dlLive := w.app.formatRate(w.app.currentSample.DownloadBytesPerSec).String()
 	ulLive := w.app.formatRate(w.app.currentSample.UploadBytesPerSec).String()
-	halfBadgeW := (liveBadgeW - s(12)) / 2
+	halfBadgeW := (liveBadgeW - s(14)) / 2
 	gpDrawString(gfx, w.fontSmall, fmtCenter, bCyan, "↓ "+dlLive, gpRectF{
-		X: float32(liveBadgeX + s(6)), Y: float32(liveBadgeY), Width: float32(halfBadgeW), Height: float32(liveBadgeH),
+		X: float32(liveBadgeX + s(7)), Y: float32(liveBadgeY), Width: float32(halfBadgeW), Height: float32(liveBadgeH),
 	})
 	gpDrawString(gfx, w.fontSmall, fmtCenter, bLime, "↑ "+ulLive, gpRectF{
-		X: float32(liveBadgeX + s(6) + halfBadgeW), Y: float32(liveBadgeY), Width: float32(halfBadgeW), Height: float32(liveBadgeH),
+		X: float32(liveBadgeX + s(7) + halfBadgeW), Y: float32(liveBadgeY), Width: float32(halfBadgeW), Height: float32(liveBadgeH),
 	})
 
 	// 2. Big Speedometer Gauge Card
-	stCardY := s(60)
-	stCardH := s(298)
+	stCardY := s(66)
+	stCardH := s(324)
 	drawCard(marginX, stCardY, cardW, stCardH, s(16))
 
 	w.stMu.Lock()
@@ -924,9 +924,9 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	w.stMu.Unlock()
 
 	gaugeCX := float64(width) / 2.0
-	gaugeCY := float64(stCardY + s(112))
-	rOuter := float64(s(94))
-	rInner := float64(s(80))
+	gaugeCY := float64(stCardY + s(120))
+	rOuter := float64(s(102))
+	rInner := float64(s(86))
 
 	// 270-degree background gauge track (135° to 405°)
 	if trackPath, err := buildGaugeArcPath(gaugeCX, gaugeCY, rOuter, rInner, 135.0, 270.0); err == nil && trackPath != 0 {
@@ -935,7 +935,7 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	}
 
 	// Subtle radial tick dots along the inner arc
-	tickR := rInner - float64(s(9))
+	tickR := rInner - float64(s(10))
 	tickSize := s(4)
 	for i := 0; i <= 8; i++ {
 		ang := (135.0 + float64(i)*270.0/8.0) * math.Pi / 180.0
@@ -999,25 +999,25 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 
 	// Center Hero Typography inside Gauge
 	gpDrawString(gfx, w.fontCaps, fmtCenter, bMuted, phaseLabel, gpRectF{
-		X: float32(gaugeCX) - float32(s(70)), Y: float32(gaugeCY) - float32(s(44)),
-		Width: float32(s(140)), Height: float32(s(16)),
+		X: float32(gaugeCX) - float32(s(76)), Y: float32(gaugeCY) - float32(s(50)),
+		Width: float32(s(152)), Height: float32(s(18)),
 	})
 	gpDrawString(gfx, w.fontGaugeHero, fmtCenter, bText, heroValue, gpRectF{
-		X: float32(gaugeCX) - float32(s(84)), Y: float32(gaugeCY) - float32(s(22)),
-		Width: float32(s(168)), Height: float32(s(44)),
+		X: float32(gaugeCX) - float32(s(94)), Y: float32(gaugeCY) - float32(s(26)),
+		Width: float32(s(188)), Height: float32(s(52)),
 	})
 	if heroUnit != "" {
 		gpDrawString(gfx, w.fontGaugeUnit, fmtCenter, bMuted, heroUnit, gpRectF{
-			X: float32(gaugeCX) - float32(s(60)), Y: float32(gaugeCY) + float32(s(24)),
-			Width: float32(s(120)), Height: float32(s(18)),
+			X: float32(gaugeCX) - float32(s(66)), Y: float32(gaugeCY) + float32(s(28)),
+			Width: float32(s(132)), Height: float32(s(20)),
 		})
 	}
 
 	// Three compact result pills directly beneath the gauge
-	metricY := stCardY + s(202)
-	metricH := s(32)
-	metricGap := s(8)
-	metricPad := s(22)
+	metricY := stCardY + s(218)
+	metricH := s(36)
+	metricGap := s(10)
+	metricPad := s(20)
 	metricW := (cardW - metricPad*2 - metricGap*2) / 3
 
 	pingTxt := "Ping  —"
@@ -1050,10 +1050,10 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	}
 
 	// Centered capsule Start / Cancel / Test Again button
-	btnW := s(166)
-	btnH := s(38)
+	btnW := s(188)
+	btnH := s(42)
 	btnX := (width - btnW) / 2
-	btnY := stCardY + s(246)
+	btnY := stCardY + s(268)
 	btnLabel := "Start Speed Test"
 	if stRunning {
 		btnLabel = "Cancel"
@@ -1072,20 +1072,20 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 
 	// 3. Minimal Settings Card (4 horizontal label + capsule pill rows)
 	appCardY := stCardY + stCardH + s(14)
-	appCardH := s(196)
+	appCardH := s(216)
 	drawCard(marginX, appCardY, cardW, appCardH, s(16))
 
 	cfg := w.app.cfg
-	labelColW := s(56)
+	labelColW := s(64)
 	pillStartX := marginX + s(16) + labelColW
 	pillAreaW := cardW - s(32) - labelColW
-	pillH := s(32)
+	pillH := s(36)
 
 	drawInlinePillRow := func(y int32, title string, items []uiControl) {
 		gpDrawString(gfx, w.fontSmall, fmtNear, bMuted, title, gpRectF{
 			X: float32(marginX + s(16)), Y: float32(y), Width: float32(labelColW - s(4)), Height: float32(pillH),
 		})
-		gap := s(6)
+		gap := s(8)
 		n := int32(len(items))
 		pw := (pillAreaW - gap*(n-1)) / n
 		for i := range items {
@@ -1096,8 +1096,8 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		}
 	}
 
-	rowStep := s(44)
-	row0Y := appCardY + s(16)
+	rowStep := s(48)
+	row0Y := appCardY + s(18)
 	drawInlinePillRow(row0Y, "Show", []uiControl{
 		{action: actModeBoth, label: "Both", selected: cfg.DisplayMode == config.ModeBoth},
 		{action: actModeDownload, label: "Download", selected: cfg.DisplayMode == config.ModeDownload},
@@ -1122,18 +1122,18 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 
 	// 4. Clean Minimal Footer Row (Start with Windows switch + Sponsor pill)
 	footY := appCardY + appCardH + s(14)
-	footH := s(54)
+	footH := s(58)
 	drawCard(marginX, footY, cardW, footH, s(16))
 
 	autoStart, _ := config.IsAutoStartEnabled()
-	swW := s(40)
-	swH := s(22)
+	swW := s(44)
+	swH := s(24)
 	swX := marginX + s(16)
 	swY := footY + (footH-swH)/2
 
 	w.controls = append(w.controls, uiControl{
 		action:   actAutoStart,
-		bounds:   rect{Left: swX, Top: swY, Right: swX + s(185), Bottom: swY + swH},
+		bounds:   rect{Left: swX, Top: swY, Right: swX + s(210), Bottom: swY + swH},
 		isSwitch: true,
 		selected: autoStart,
 	})
@@ -1142,16 +1142,16 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	knobX := swX + s(3)
 	if autoStart {
 		trackBrush = bCyan
-		knobX = swX + swW - s(19)
+		knobX = swX + swW - s(21)
 	}
 	gpFillRoundedRect(gfx, trackBrush, swX, swY, swW, swH, swH/2)
-	gpFillRoundedRect(gfx, bKnob, knobX, swY+s(3), s(16), s(16), s(8))
+	gpFillRoundedRect(gfx, bKnob, knobX, swY+s(3), s(18), s(18), s(9))
 	gpDrawString(gfx, w.fontSmall, fmtNear, bText, "Start with Windows", gpRectF{
-		X: float32(swX + swW + s(10)), Y: float32(footY), Width: float32(s(140)), Height: float32(footH),
+		X: float32(swX + swW + s(12)), Y: float32(footY), Width: float32(s(170)), Height: float32(footH),
 	})
 
-	spW := s(164)
-	spH := s(32)
+	spW := s(192)
+	spH := s(36)
 	spX := marginX + cardW - s(14) - spW
 	spY := footY + (footH-spH)/2
 	spCtrl := uiControl{
