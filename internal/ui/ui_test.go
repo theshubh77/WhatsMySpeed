@@ -303,6 +303,31 @@ func TestLabelStylesAndLayoutsRenderCleanly(t *testing.T) {
 			}
 		}
 	}
+
+	stackedApp := NewApp(config.Default(), "", network.NewMonitor(), false)
+	stackedApp.fontFamily = ResolveTaskbarFontName()
+	stackedMetrics := stackedApp.computeMetrics(96, 48)
+
+	for _, tc := range []struct {
+		name string
+		mode config.DisplayMode
+		lay  config.OverlayLayout
+	}{
+		{"inline", config.ModeBoth, config.LayoutInline},
+		{"download_only", config.ModeDownload, config.LayoutStackedUp},
+		{"upload_only", config.ModeUpload, config.LayoutStackedUp},
+	} {
+		cfg := config.Default()
+		cfg.DisplayMode = tc.mode
+		cfg.Layout = tc.lay
+		singleApp := NewApp(cfg, "", network.NewMonitor(), false)
+		singleApp.fontFamily = stackedApp.fontFamily
+		m := singleApp.computeMetrics(96, 48)
+		if m.fontPx <= stackedMetrics.fontPx || m.iconSize <= stackedMetrics.iconSize {
+			t.Fatalf("%s metrics (%d font, %d icon) should be larger than stacked (%d font, %d icon)",
+				tc.name, m.fontPx, m.iconSize, stackedMetrics.fontPx, stackedMetrics.iconSize)
+		}
+	}
 }
 
 func TestSettingsWindowSceneAndHitTest(t *testing.T) {

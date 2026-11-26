@@ -535,15 +535,21 @@ func (a *App) computeMetrics(dpi uint32, taskbarHeight int32) layoutMetrics {
 
 	switch {
 	case a.cfg.DisplayMode != config.ModeBoth || isInline:
-		m.fontPx = scaleDPIInt(13, dpi)
-		m.iconSize = scaleDPIInt(14, dpi)
-		m.rowHeight = scaleDPIInt(18, dpi)
+		m.fontPx = scaleDPIInt(16, dpi)
+		m.iconSize = scaleDPIInt(17, dpi)
+		m.rowHeight = scaleDPIInt(26, dpi)
 		m.rowGap = 0
 		m.height = scaleDPIInt(38, dpi)
+		m.iconGap = scaleDPIInt(5, dpi)
+		m.unitGap = scaleDPIInt(4, dpi)
+		m.inlineGap = scaleDPIInt(12, dpi)
 		if isCompact {
-			m.fontPx = scaleDPIInt(12, dpi)
-			m.iconSize = scaleDPIInt(13, dpi)
-			m.height = scaleDPIInt(32, dpi)
+			m.fontPx = scaleDPIInt(14, dpi)
+			m.iconSize = scaleDPIInt(15, dpi)
+			m.rowHeight = scaleDPIInt(22, dpi)
+			m.height = scaleDPIInt(34, dpi)
+			m.iconGap = scaleDPIInt(3, dpi)
+			m.unitGap = scaleDPIInt(2, dpi)
 		}
 	case isCompact:
 		m.fontPx = scaleDPIInt(11, dpi)
@@ -563,6 +569,14 @@ func (a *App) computeMetrics(dpi uint32, taskbarHeight int32) layoutMetrics {
 		maxH := taskbarHeight - scaleDPIInt(6, dpi)
 		if maxH > 16 && m.height > maxH {
 			m.height = maxH
+		}
+	}
+	if a.cfg.DisplayMode != config.ModeBoth || isInline {
+		if m.rowHeight > m.height {
+			m.rowHeight = m.height
+		}
+		if maxIcon := m.height - scaleDPIInt(4, dpi); maxIcon > 0 && m.iconSize > maxIcon {
+			m.iconSize = maxIcon
 		}
 	}
 
