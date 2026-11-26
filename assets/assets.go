@@ -1,4 +1,4 @@
-// Package assets embeds Phosphor icon SVGs directly into the binary.
+// Package assets embeds the application logo and Phosphor icon SVGs directly into the binary.
 package assets
 
 import (
@@ -7,6 +7,9 @@ import (
 
 //go:embed icons/*.svg
 var Icons embed.FS
+
+//go:embed app/logo-192.png
+var AppLogoPNG []byte
 
 // Icon asset paths within the embedded filesystem.
 const (

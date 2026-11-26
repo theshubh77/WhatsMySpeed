@@ -60,16 +60,20 @@ func (t *TrayManager) buildNID(flags uint32, tip string) notifyIconDataW {
 	return nid
 }
 
-// SyncIcon ensures the system tray icon is registered and themed for the current DPI and taskbar mode.
+// SyncIcon ensures the system tray icon is registered and sized for the current DPI.
 func (t *TrayManager) SyncIcon(dpi uint32, isLight bool, forceReadd bool) error {
 	needNewIcon := t.hIcon == 0 || t.dpi != dpi || t.isLight != isLight
 	var oldIcon uintptr
 
 	if needNewIcon {
-		colors := ColorsForTheme(isLight)
-		newIcon, err := CreateTrayHICON(assets.IconGaugeBold, dpi, colors.TrayIconARGB)
+		w, h := getSmallIconMetrics(dpi)
+		newIcon, err := CreatePNGHICON(assets.AppLogoPNG, w, h)
 		if err != nil {
-			return err
+			colors := ColorsForTheme(isLight)
+			newIcon, err = CreateTrayHICON(assets.IconGaugeBold, dpi, colors.TrayIconARGB)
+			if err != nil {
+				return err
+			}
 		}
 		oldIcon = t.hIcon
 		t.hIcon = newIcon

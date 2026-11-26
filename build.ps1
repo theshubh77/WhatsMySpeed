@@ -18,6 +18,17 @@ if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
     }
 }
 
+$windres = Get-Command x86_64-w64-mingw32-windres -ErrorAction SilentlyContinue
+if ($windres) {
+    Push-Location "cmd\whatsmyspeed"
+    try {
+        & $windres.Source -O coff -F pe-x86-64 app.rc -o rsrc_windows_amd64.syso
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    } finally {
+        Pop-Location
+    }
+}
+
 Write-Host "Building $Out..."
 go build -trimpath -ldflags="-s -w -H=windowsgui" -o $Out ./cmd/whatsmyspeed
 if ($LASTEXITCODE -ne 0) {

@@ -1,7 +1,13 @@
-# WhatsMySpeed
+<p align="center">
+  <img src="assets/app/logo.svg" alt="WhatsMySpeed Logo" width="88" />
+</p>
 
-[![Sponsor](https://img.shields.io/badge/Sponsor-%40theshubh77-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/theshubh77)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+<h1 align="center">WhatsMySpeed</h1>
+
+<p align="center">
+  <a href="https://github.com/sponsors/theshubh77"><img src="https://img.shields.io/badge/Sponsor-%40theshubh77-ea4aaa?logo=githubsponsors&logoColor=white" alt="Sponsor @theshubh77" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+</p>
 
 A lightweight, native Windows 11 real-time internet speed monitor written in pure Go and Win32 APIs. **WhatsMySpeed** docks directly onto the Windows 11 taskbar to the left of the system tray overflow chevron (`^`), blending seamlessly with native Light and Dark taskbar themes.
 
@@ -20,7 +26,7 @@ A lightweight, native Windows 11 real-time internet speed monitor written in pur
   - Borderless, transparent, click-responsive layered window (`WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_NOACTIVATE`) with zero focus stealing.
   - Automatically docks beside `TrayNotifyWnd` (just left of the `^` chevron) and reacts to taskbar resize, DPI scaling, display changes, Explorer restarts, auto-hide, and fullscreen apps.
   - Automatically detects Windows 11 Light/Dark taskbar theme (`SystemUsesLightTheme` / `AppsUseLightTheme`) and renders anti-aliased `Segoe UI Variable Text` (falling back to `Segoe UI`).
-- **Phosphor Icons Embedded:** Bundles official [Phosphor Icons](https://phosphoricons.com/) (`arrow-up`, `arrow-down`, and `gauge`) directly into the standalone `.exe` via `//go:embed` and renders them crisply with GDI+ at any DPI.
+- **App & Taskbar Icons Embedded:** Embeds the custom WhatsMySpeed application icon (EXE icon, window icon, and tray icon) along with official [Phosphor Icons](https://phosphoricons.com/) (`arrow-up`, `arrow-down`, and `gauge`) directly into the standalone `.exe` with crisp multi-DPI rendering.
 - **Persistence:** Saves preferences in `%APPDATA%\WhatsMySpeed\config.json` and autostart in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 
 ## Project Structure
@@ -28,11 +34,15 @@ A lightweight, native Windows 11 real-time internet speed monitor written in pur
 ```text
 WhatsMySpeed/
 ├── assets/
-│   ├── assets.go               # Embedded Phosphor SVG assets (//go:embed)
+│   ├── app/                    # Application icon (.ico, .png, .svg)
+│   ├── assets.go               # Embedded app logo & Phosphor SVGs (//go:embed)
 │   └── icons/                  # Official Phosphor SVG icons
 ├── cmd/
 │   └── whatsmyspeed/
-│       └── main.go             # Application entry point & single-instance guard
+│       ├── app.manifest        # Per-Monitor V2 DPI & Common Controls manifest
+│       ├── app.rc              # Windows executable icon & version resource script
+│       ├── main.go             # Application entry point & single-instance guard
+│       └── rsrc_windows_amd64.syso # Pre-compiled Windows resources linked by go build
 ├── internal/
 │   ├── config/
 │   │   ├── autostart.go        # Windows startup registry management
@@ -118,6 +128,8 @@ Contributions, bug reports, and pull requests are welcome! Please run `go test .
 
 If you find **WhatsMySpeed** useful and would like to support its development, you can sponsor [@theshubh77 on GitHub Sponsors](https://github.com/sponsors/theshubh77).
 
-## License
+## License & Credits
 
-This project is open source and licensed under the [MIT License](LICENSE).
+- Licensed under the [MIT License](LICENSE).
+- App icon based on `andrsrxn:wifi-in-out` by [Andrés Raxón](https://github.com/andrsrxn/icons) (MIT License).
+- Directional indicator icons from [Phosphor Icons](https://phosphoricons.com/) (MIT License).

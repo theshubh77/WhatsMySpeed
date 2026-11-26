@@ -1,8 +1,12 @@
 package ui
 
 import (
+	"bytes"
 	"encoding/xml"
 	"fmt"
+	"image"
+	"image/draw"
+	"image/png"
 	"math"
 	"strconv"
 	"strings"
@@ -770,6 +774,93 @@ func CreateSizedHICON(assetPath string, width, height int32, argb uint32) (uintp
 	st, _, _ := procGdipCreateHICONFromBitmap.Call(gpBitmap, uintptr(unsafe.Pointer(&hIcon)))
 	if st != 0 || hIcon == 0 {
 		return 0, fmt.Errorf("GdipCreateHICONFromBitmap failed with status %d", st)
+	}
+	return hIcon, nil
+}
+
+// DecodePNGToBitmap decodes a PNG image and scales it using high-quality bicubic filtering
+// into a 32bppPARGB GDI+ bitmap of size width x height.
+func DecodePNGToBitmap(pngData []byte, width, height int32) (uintptr, []byte, error) {
+	img, err := png.Decode(bytes.NewReader(pngData))
+	if err != nil {
+		return 0, nil, fmt.Errorf("decode PNG icon: %w", err)
+	}
+	bounds := img.Bounds()
+	srcW := bounds.Dx()
+	srcH := bounds.Dy()
+	if srcW <= 0 || srcH <= 0 {
+		return 0, nil, fmt.Errorf("empty PNG image")
+	}
+
+	// Convert to premultiplied RGBA first, then swizzle RGBA -> BGRA for GDI+ 32bppPARGB.
+	rgba := image.NewRGBA(image.Rect(0, 0, srcW, srcH))
+	draw.Draw(rgba, rgba.Bounds(), img, bounds.Min, draw.Src)
+	srcBuf := make([]byte, len(rgba.Pix))
+	for i := 0; i < len(rgba.Pix); i += 4 {
+		srcBuf[i+0] = rgba.Pix[i+2] // B
+		srcBuf[i+1] = rgba.Pix[i+1] // G
+		srcBuf[i+2] = rgba.Pix[i+0] // R
+		srcBuf[i+3] = rgba.Pix[i+3] // A
+	}
+
+	var srcBmp uintptr
+	st, _, _ := procGdipCreateBitmapFromScan0.Call(
+		uintptr(srcW),
+		uintptr(srcH),
+		uintptr(srcW*4),
+		gpPixelFormat32bppPARGB,
+		uintptr(unsafe.Pointer(&srcBuf[0])),
+		uintptr(unsafe.Pointer(&srcBmp)),
+	)
+	if st != 0 || srcBmp == 0 {
+		return 0, nil, fmt.Errorf("GdipCreateBitmapFromScan0(src) failed with status %d", st)
+	}
+	defer procGdipDisposeImage.Call(srcBmp)
+
+	dstBuf := make([]byte, int(width)*int(height)*4)
+	var dstBmp uintptr
+	st, _, _ = procGdipCreateBitmapFromScan0.Call(
+		uintptr(width),
+		uintptr(height),
+		uintptr(width*4),
+		gpPixelFormat32bppPARGB,
+		uintptr(unsafe.Pointer(&dstBuf[0])),
+		uintptr(unsafe.Pointer(&dstBmp)),
+	)
+	if st != 0 || dstBmp == 0 {
+		return 0, nil, fmt.Errorf("GdipCreateBitmapFromScan0(dst) failed with status %d", st)
+	}
+
+	var gfx uintptr
+	st, _, _ = procGdipGetImageGraphicsContext.Call(dstBmp, uintptr(unsafe.Pointer(&gfx)))
+	if st != 0 || gfx == 0 {
+		_, _, _ = procGdipDisposeImage.Call(dstBmp)
+		return 0, nil, fmt.Errorf("GdipGetImageGraphicsContext failed with status %d", st)
+	}
+	defer procGdipDeleteGraphics.Call(gfx)
+
+	_, _, _ = procGdipGraphicsClear.Call(gfx, 0x00000000)
+	_, _, _ = procGdipSetSmoothingMode.Call(gfx, gpSmoothingModeHighQuality)
+	_, _, _ = procGdipSetInterpolationMode.Call(gfx, gpInterpolationModeHighQualityBicubic)
+	_, _, _ = procGdipDrawImageRectI.Call(gfx, srcBmp, 0, 0, uintptr(width), uintptr(height))
+	_ = srcBuf
+	return dstBmp, dstBuf, nil
+}
+
+// CreatePNGHICON converts an embedded PNG image into a scaled native Win32 HICON.
+// Caller must destroy the returned HICON with DestroyIcon.
+func CreatePNGHICON(pngData []byte, width, height int32) (uintptr, error) {
+	gpBitmap, buf, err := DecodePNGToBitmap(pngData, width, height)
+	if err != nil {
+		return 0, err
+	}
+	defer procGdipDisposeImage.Call(gpBitmap)
+	_ = buf
+
+	var hIcon uintptr
+	st, _, _ := procGdipCreateHICONFromBitmap.Call(gpBitmap, uintptr(unsafe.Pointer(&hIcon)))
+	if st != 0 || hIcon == 0 {
+		return 0, fmt.Errorf("GdipCreateHICONFromBitmap(PNG) failed with status %d", st)
 	}
 	return hIcon, nil
 }

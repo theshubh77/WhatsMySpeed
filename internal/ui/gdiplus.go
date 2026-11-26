@@ -11,6 +11,7 @@ const (
 	gpPixelFormat32bppPARGB = 0x000E200B
 
 	gpSmoothingModeHighQuality           = 2
+	gpInterpolationModeHighQualityBicubic = 7
 	gpTextRenderingHintAntiAliasGridFit  = 3
 	gpTextRenderingHintAntiAlias         = 4
 	gpFillModeWinding                 = 1
@@ -34,6 +35,7 @@ var (
 	procGdipDeleteGraphics            = modGdiplus.NewProc("GdipDeleteGraphics")
 	procGdipGraphicsClear             = modGdiplus.NewProc("GdipGraphicsClear")
 	procGdipSetSmoothingMode          = modGdiplus.NewProc("GdipSetSmoothingMode")
+	procGdipSetInterpolationMode      = modGdiplus.NewProc("GdipSetInterpolationMode")
 	procGdipSetTextRenderingHint      = modGdiplus.NewProc("GdipSetTextRenderingHint")
 	procGdipCreateSolidFill           = modGdiplus.NewProc("GdipCreateSolidFill")
 	procGdipDeleteBrush               = modGdiplus.NewProc("GdipDeleteBrush")

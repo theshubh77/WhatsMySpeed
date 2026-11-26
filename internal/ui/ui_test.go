@@ -70,6 +70,12 @@ func TestEmbeddedPhosphorIconsParseAndRasterize(t *testing.T) {
 		t.Fatalf("CreateTrayHICON failed: %v", err)
 	}
 	_, _, _ = procDestroyIcon.Call(hIcon)
+
+	appIcon, err := CreatePNGHICON(assets.AppLogoPNG, 32, 32)
+	if err != nil {
+		t.Fatalf("CreatePNGHICON failed: %v", err)
+	}
+	_, _, _ = procDestroyIcon.Call(appIcon)
 }
 
 func TestResolveTaskbarFontName(t *testing.T) {

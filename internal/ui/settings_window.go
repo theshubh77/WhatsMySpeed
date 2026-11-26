@@ -299,8 +299,14 @@ func (w *SettingsWindow) create() error {
 	}
 	w.hwnd = hwnd
 
-	w.hIconSmall, _ = CreateSizedHICON(assets.IconGaugeBold, scaleDPIInt(16, dpi), scaleDPIInt(16, dpi), 0xFF4CC2FF)
-	w.hIconBig, _ = CreateSizedHICON(assets.IconGaugeBold, scaleDPIInt(32, dpi), scaleDPIInt(32, dpi), 0xFF4CC2FF)
+	w.hIconSmall, _ = CreatePNGHICON(assets.AppLogoPNG, scaleDPIInt(16, dpi), scaleDPIInt(16, dpi))
+	w.hIconBig, _ = CreatePNGHICON(assets.AppLogoPNG, scaleDPIInt(32, dpi), scaleDPIInt(32, dpi))
+	if w.hIconSmall == 0 {
+		w.hIconSmall, _ = CreateSizedHICON(assets.IconGaugeBold, scaleDPIInt(16, dpi), scaleDPIInt(16, dpi), 0xFF4CC2FF)
+	}
+	if w.hIconBig == 0 {
+		w.hIconBig, _ = CreateSizedHICON(assets.IconGaugeBold, scaleDPIInt(32, dpi), scaleDPIInt(32, dpi), 0xFF4CC2FF)
+	}
 	if w.hIconSmall != 0 {
 		_, _, _ = procSendMessageW.Call(w.hwnd, wmSetIcon, iconSmall, w.hIconSmall)
 	}
@@ -588,9 +594,12 @@ func (w *SettingsWindow) ensureDrawResources(dpi uint32, isLight bool) {
 		w.fontSmall, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(11, dpi), 400)
 		w.fontMetric, _ = gpCreateFontPx(screenDC, fam, scaleDPIInt(18, dpi), 700)
 
-		pal := getDashboardPalette(isLight)
-		iconPx := scaleDPIInt(26, dpi)
-		w.gaugeBmp, w.gaugeBuf, _ = RasterizeSVGToBitmap(assets.IconGaugeBold, iconPx, iconPx, pal.accent)
+		iconPx := scaleDPIInt(32, dpi)
+		w.gaugeBmp, w.gaugeBuf, _ = DecodePNGToBitmap(assets.AppLogoPNG, iconPx, iconPx)
+		if w.gaugeBmp == 0 {
+			pal := getDashboardPalette(isLight)
+			w.gaugeBmp, w.gaugeBuf, _ = RasterizeSVGToBitmap(assets.IconGaugeBold, iconPx, iconPx, pal.accent)
+		}
 
 		w.resDPI = dpi
 		w.resLight = isLight
@@ -758,11 +767,11 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 
 	// 1. Header
 	hdrY := s(16)
-	iconSz := s(26)
+	iconSz := s(32)
 	if w.gaugeBmp != 0 {
-		_, _, _ = procGdipDrawImageRectI.Call(gfx, w.gaugeBmp, uintptr(marginX), uintptr(hdrY+s(6)), uintptr(iconSz), uintptr(iconSz))
+		_, _, _ = procGdipDrawImageRectI.Call(gfx, w.gaugeBmp, uintptr(marginX), uintptr(hdrY+s(4)), uintptr(iconSz), uintptr(iconSz))
 	}
-	titleX := float32(marginX + iconSz + s(10))
+	titleX := float32(marginX + iconSz + s(12))
 	gpDrawString(gfx, w.fontTitle, fmtNear, bText, config.AppName, gpRectF{
 		X: titleX, Y: float32(hdrY), Width: float32(s(200)), Height: float32(s(26)),
 	})
