@@ -224,10 +224,19 @@ func ComputeOverlayBounds(info TaskbarInfo, overlayW, overlayH int32) (x, y int3
 
 	// Vertical taskbar (left or right edge).
 	x = tb.Left + (tb.Width()-overlayW)/2
+	if x+overlayW > tb.Right {
+		x = tb.Right - overlayW
+	}
+	if x < tb.Left {
+		x = tb.Left
+	}
 	if !info.TrayRect.Empty() && info.TrayRect.Top > tb.Top {
 		y = info.TrayRect.Top - overlayH - gap
 	} else {
 		y = tb.Bottom - overlayH - scaleDPIInt(120, info.DPI)
+	}
+	if y+overlayH > tb.Bottom-gap {
+		y = tb.Bottom - overlayH - gap
 	}
 	if y < tb.Top+gap {
 		y = tb.Top + gap

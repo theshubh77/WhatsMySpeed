@@ -28,21 +28,27 @@ const (
 )
 
 type layoutMetrics struct {
-	width      int32
-	height     int32
-	padX       int32
-	indicatorW int32
-	iconSize   int32
-	iconGap    int32
-	valueWidth int32
-	unitGap    int32
-	unitWidth  int32
-	itemWidth  int32
-	inlineGap  int32
-	rowHeight  int32
-	rowGap     int32
-	cornerRad  int32
-	fontPx     int32
+	width           int32
+	height          int32
+	padX            int32
+	padY            int32
+	indicatorW      int32
+	iconSize        int32
+	iconGap         int32
+	valueWidth      int32
+	unitGap         int32
+	unitWidth       int32
+	itemWidth       int32
+	inlineGap       int32
+	rowHeight       int32
+	subRowHeight    int32
+	rowGap          int32
+	itemGap         int32
+	cornerRad       int32
+	fontPx          int32
+	subFontPx       int32
+	splitUnit       bool
+	effectiveInline bool
 }
 
 // App manages the Win32 layered taskbar overlay, system tray icon, settings window, and 1-second refresh loop.
@@ -65,6 +71,7 @@ type App struct {
 	currentSample     network.SpeedSample
 	isLightTheme      bool
 	currentDPI        uint32
+	lastTaskbarWidth  int32
 	lastTaskbarHeight int32
 	isHovered         bool
 	trackingLeave     bool
@@ -95,6 +102,7 @@ type App struct {
 	dibW       int32
 	dibH       int32
 	gpFont     uintptr
+	gpSubFont  uintptr
 	fmtFar     uintptr
 	fmtNear    uintptr
 	fmtCenter  uintptr
@@ -455,32 +463,35 @@ func (a *App) refreshEnvironment(forceTrayReadd bool) {
 	}
 
 	isLight := DetectTaskbarLightTheme()
-	var tbHeight int32
+	var tbWidth, tbHeight int32
 	if info.Valid && !info.TaskbarRect.Empty() {
+		tbWidth = info.TaskbarRect.Width()
 		tbHeight = info.TaskbarRect.Height()
 	}
 
 	needRebuild := a.gpFont == 0 ||
 		a.currentDPI != dpi ||
 		a.isLightTheme != isLight ||
+		a.lastTaskbarWidth != tbWidth ||
 		a.lastTaskbarHeight != tbHeight
 
 	a.currentDPI = dpi
 	a.isLightTheme = isLight
+	a.lastTaskbarWidth = tbWidth
 	a.lastTaskbarHeight = tbHeight
 
 	if needRebuild {
-		a.rebuildDrawingResources(dpi, isLight, tbHeight)
+		a.rebuildDrawingResources(dpi, isLight, tbWidth, tbHeight)
 	}
 	if a.tray != nil {
 		_ = a.tray.SyncIcon(dpi, isLight, forceTrayReadd)
 	}
 }
 
-func (a *App) rebuildDrawingResources(dpi uint32, isLight bool, taskbarHeight int32) {
+func (a *App) rebuildDrawingResources(dpi uint32, isLight bool, taskbarWidth, taskbarHeight int32) {
 	a.releaseRenderResources()
 
-	a.metrics = a.computeMetrics(dpi, taskbarHeight)
+	a.metrics = a.computeMetrics(dpi, taskbarWidth, taskbarHeight)
 	colors := ColorsForTheme(isLight)
 
 	screenDC, _, _ := procGetDC.Call(0)
@@ -492,6 +503,13 @@ func (a *App) rebuildDrawingResources(dpi uint32, isLight bool, taskbarHeight in
 		a.gpFont = font
 	} else if font, err := gpCreateFontPx(screenDC, "Segoe UI", a.metrics.fontPx, overlayFontWeight); err == nil {
 		a.gpFont = font
+	}
+	if a.metrics.splitUnit && a.metrics.subFontPx > 0 {
+		if subFont, err := gpCreateFontPx(screenDC, a.fontFamily, a.metrics.subFontPx, overlayFontWeight); err == nil {
+			a.gpSubFont = subFont
+		} else if subFont, err := gpCreateFontPx(screenDC, "Segoe UI", a.metrics.subFontPx, overlayFontWeight); err == nil {
+			a.gpSubFont = subFont
+		}
 	}
 
 	a.fmtFar, _ = gpCreateStringFormat(gpStringAlignmentFar, gpStringAlignmentCenter)
@@ -516,16 +534,18 @@ func (a *App) rebuildDrawingResources(dpi uint32, isLight bool, taskbarHeight in
 	a.ensureDIB(a.metrics.width, a.metrics.height)
 }
 
-func (a *App) computeMetrics(dpi uint32, taskbarHeight int32) layoutMetrics {
+func (a *App) computeMetrics(dpi uint32, taskbarWidth, taskbarHeight int32) layoutMetrics {
 	isCompact := a.cfg.Layout == config.LayoutCompact
+	isVertical := taskbarWidth > 0 && taskbarHeight > 0 && taskbarWidth < taskbarHeight
 	isInline := a.cfg.Layout == config.LayoutInline && a.cfg.DisplayMode == config.ModeBoth
 
 	m := layoutMetrics{
-		padX:      scaleDPIInt(8, dpi),
-		iconGap:   scaleDPIInt(4, dpi),
-		unitGap:   scaleDPIInt(3, dpi),
-		inlineGap: scaleDPIInt(10, dpi),
-		cornerRad: scaleDPIInt(5, dpi),
+		padX:            scaleDPIInt(8, dpi),
+		iconGap:         scaleDPIInt(4, dpi),
+		unitGap:         scaleDPIInt(3, dpi),
+		inlineGap:       scaleDPIInt(10, dpi),
+		cornerRad:       scaleDPIInt(5, dpi),
+		effectiveInline: isInline,
 	}
 	if isCompact {
 		m.padX = scaleDPIInt(6, dpi)
@@ -565,13 +585,54 @@ func (a *App) computeMetrics(dpi uint32, taskbarHeight int32) layoutMetrics {
 		m.height = m.rowHeight*2 + m.rowGap + scaleDPIInt(8, dpi)
 	}
 
-	if taskbarHeight > 0 {
+	if !isVertical && taskbarHeight > 0 {
 		maxH := taskbarHeight - scaleDPIInt(6, dpi)
 		if maxH > 16 && m.height > maxH {
 			m.height = maxH
 		}
 	}
-	if a.cfg.DisplayMode != config.ModeBoth || isInline {
+
+	m.indicatorW, m.valueWidth, m.unitWidth = a.measureColumns(dpi, m.fontPx, m.fontPx, m.iconSize)
+	m.itemWidth = m.indicatorW + m.iconGap + m.valueWidth + m.unitGap + m.unitWidth
+	if isInline {
+		m.width = m.padX + m.itemWidth + m.inlineGap + m.itemWidth + m.padX
+	} else {
+		m.width = m.padX + m.itemWidth + m.padX
+	}
+
+	if isVertical {
+		maxW := taskbarWidth - scaleDPIInt(4, dpi)
+		if maxW < scaleDPIInt(32, dpi) {
+			maxW = taskbarWidth
+		}
+		// If Inline side-by-side doesn't fit inside a vertical taskbar, stack items cleanly.
+		if isInline && m.width > maxW {
+			m.effectiveInline = false
+			if isCompact {
+				m.fontPx = scaleDPIInt(11, dpi)
+				m.iconSize = scaleDPIInt(12, dpi)
+				m.rowHeight = scaleDPIInt(13, dpi)
+				m.height = m.rowHeight*2 + scaleDPIInt(6, dpi)
+			} else {
+				m.fontPx = scaleDPIInt(12, dpi)
+				m.iconSize = scaleDPIInt(13, dpi)
+				m.rowHeight = scaleDPIInt(15, dpi)
+				m.rowGap = scaleDPIInt(1, dpi)
+				m.height = m.rowHeight*2 + m.rowGap + scaleDPIInt(8, dpi)
+			}
+			m.iconGap = scaleDPIInt(4, dpi)
+			m.unitGap = scaleDPIInt(3, dpi)
+			m.indicatorW, m.valueWidth, m.unitWidth = a.measureColumns(dpi, m.fontPx, m.fontPx, m.iconSize)
+			m.itemWidth = m.indicatorW + m.iconGap + m.valueWidth + m.unitGap + m.unitWidth
+			m.width = m.padX + m.itemWidth + m.padX
+		}
+		// Narrow Left/Right taskbar: stack unit beneath (indicator + value) so nothing clips horizontally.
+		if m.width > maxW {
+			return a.computeVerticalSplitMetrics(dpi, maxW, isCompact)
+		}
+	}
+
+	if m.effectiveInline || a.cfg.DisplayMode != config.ModeBoth {
 		if m.rowHeight > m.height {
 			m.rowHeight = m.height
 		}
@@ -579,19 +640,80 @@ func (a *App) computeMetrics(dpi uint32, taskbarHeight int32) layoutMetrics {
 			m.iconSize = maxIcon
 		}
 	}
+	return m
+}
 
-	m.indicatorW, m.valueWidth, m.unitWidth = a.measureColumns(dpi, m.fontPx, m.iconSize)
-	m.itemWidth = m.indicatorW + m.iconGap + m.valueWidth + m.unitGap + m.unitWidth
+func (a *App) computeVerticalSplitMetrics(dpi uint32, maxW int32, isCompact bool) layoutMetrics {
+	baseFont := int32(13)
+	if a.cfg.DisplayMode != config.ModeBoth {
+		baseFont = 15
+	} else if isCompact {
+		baseFont = 12
+	}
 
-	if isInline {
-		m.width = m.padX + m.itemWidth + m.inlineGap + m.itemWidth + m.padX
+	m := layoutMetrics{
+		padX:      scaleDPIInt(4, dpi),
+		padY:      scaleDPIInt(5, dpi),
+		iconGap:   scaleDPIInt(3, dpi),
+		cornerRad: scaleDPIInt(5, dpi),
+		splitUnit: true,
+	}
+	if a.cfg.DisplayMode == config.ModeBoth {
+		m.itemGap = scaleDPIInt(6, dpi)
+		if isCompact {
+			m.itemGap = scaleDPIInt(4, dpi)
+		}
+	}
+
+	maxInnerW := maxW - m.padX*2
+	if maxInnerW < 20 {
+		m.padX = 2
+		maxInnerW = maxW - 4
+	}
+
+	for pt := baseFont; pt >= 8; pt-- {
+		subPt := pt - 3
+		if subPt < 8 {
+			subPt = 8
+		}
+		iconPt := pt - 1
+		if iconPt < 9 {
+			iconPt = 9
+		}
+
+		m.fontPx = scaleDPIInt(pt, dpi)
+		m.subFontPx = scaleDPIInt(subPt, dpi)
+		m.iconSize = scaleDPIInt(iconPt, dpi)
+		m.indicatorW, m.valueWidth, m.unitWidth = a.measureColumns(dpi, m.fontPx, m.subFontPx, m.iconSize)
+
+		line1W := m.indicatorW + m.iconGap + m.valueWidth
+		neededInner := line1W
+		if m.unitWidth > neededInner {
+			neededInner = m.unitWidth
+		}
+		if neededInner <= maxInnerW || pt == 8 {
+			if pt == 8 && neededInner > maxInnerW && m.iconGap > 1 {
+				m.iconGap = 1
+			}
+			break
+		}
+	}
+
+	m.rowHeight = m.fontPx + scaleDPIInt(4, dpi)
+	m.subRowHeight = m.subFontPx + scaleDPIInt(3, dpi)
+	m.width = maxW
+	m.itemWidth = m.width - m.padX*2
+
+	blockH := m.rowHeight + m.subRowHeight
+	if a.cfg.DisplayMode == config.ModeBoth {
+		m.height = m.padY*2 + blockH*2 + m.itemGap
 	} else {
-		m.width = m.padX + m.itemWidth + m.padX
+		m.height = m.padY*2 + blockH
 	}
 	return m
 }
 
-func (a *App) measureColumns(dpi uint32, fontPx int32, iconSize int32) (int32, int32, int32) {
+func (a *App) measureColumns(dpi uint32, fontPx, unitFontPx, iconSize int32) (int32, int32, int32) {
 	fallbackInd := iconSize
 	fallbackVal := scaleDPIInt(33, dpi)
 	fallbackUnit := scaleDPIInt(30, dpi)
@@ -663,9 +785,17 @@ func (a *App) measureColumns(dpi uint32, fontPx int32, iconSize int32) (int32, i
 		unitLabels = []string{"bps", "Kbps", "Mbps", "Gbps"}
 	}
 
+	unitFont := font
+	if unitFontPx > 0 && unitFontPx != fontPx {
+		if sf, sErr := gpCreateFontPx(screenDC, a.fontFamily, unitFontPx, overlayFontWeight); sErr == nil {
+			unitFont = sf
+			defer procGdipDeleteFont.Call(sf)
+		}
+	}
+
 	var maxUnitW float32
 	for _, unit := range unitLabels {
-		w, _ := gpMeasureString(gfx, font, strFmt, unit)
+		w, _ := gpMeasureString(gfx, unitFont, strFmt, unit)
 		if w > maxUnitW {
 			maxUnitW = w
 		}
@@ -673,10 +803,10 @@ func (a *App) measureColumns(dpi uint32, fontPx int32, iconSize int32) (int32, i
 
 	valW := int32(math.Ceil(float64(maxValW))) + scaleDPIInt(2, dpi)
 	unitW := int32(math.Ceil(float64(maxUnitW))) + scaleDPIInt(2, dpi)
-	if valW < fallbackVal {
+	if maxValW <= 0 && valW < fallbackVal {
 		valW = fallbackVal
 	}
-	if unitW < fallbackUnit {
+	if maxUnitW <= 0 && unitW < fallbackUnit {
 		unitW = fallbackUnit
 	}
 	return indW, valW, unitW
@@ -1070,31 +1200,38 @@ func (a *App) paintLayeredAt(x, y int32) {
 }
 
 func (a *App) drawOverlayContent(gfx uintptr, up, down network.FormattedSpeed) {
+	blockH := a.metrics.rowHeight
+	rowGap := a.metrics.rowGap
+	if a.metrics.splitUnit {
+		blockH += a.metrics.subRowHeight
+		rowGap = a.metrics.itemGap
+	}
+
 	switch a.cfg.DisplayMode {
 	case config.ModeBoth:
-		switch a.cfg.Layout {
-		case config.LayoutInline:
-			rowY := (a.metrics.height - a.metrics.rowHeight) / 2
+		switch {
+		case a.metrics.effectiveInline:
+			rowY := (a.metrics.height - blockH) / 2
 			leftX := a.metrics.padX
 			rightX := leftX + a.metrics.itemWidth + a.metrics.inlineGap
 			a.drawSpeedItem(gfx, leftX, rowY, true, up)
 			a.drawSpeedItem(gfx, rightX, rowY, false, down)
-		case config.LayoutStackedDown:
-			totalRowsH := a.metrics.rowHeight*2 + a.metrics.rowGap
+		case a.cfg.Layout == config.LayoutStackedDown:
+			totalRowsH := blockH*2 + rowGap
 			topY := (a.metrics.height - totalRowsH) / 2
 			a.drawSpeedItem(gfx, a.metrics.padX, topY, false, down)
-			a.drawSpeedItem(gfx, a.metrics.padX, topY+a.metrics.rowHeight+a.metrics.rowGap, true, up)
-		default: // LayoutStackedUp, LayoutCompact
-			totalRowsH := a.metrics.rowHeight*2 + a.metrics.rowGap
+			a.drawSpeedItem(gfx, a.metrics.padX, topY+blockH+rowGap, true, up)
+		default: // LayoutStackedUp, LayoutCompact, or vertical taskbar Inline fallback
+			totalRowsH := blockH*2 + rowGap
 			topY := (a.metrics.height - totalRowsH) / 2
 			a.drawSpeedItem(gfx, a.metrics.padX, topY, true, up)
-			a.drawSpeedItem(gfx, a.metrics.padX, topY+a.metrics.rowHeight+a.metrics.rowGap, false, down)
+			a.drawSpeedItem(gfx, a.metrics.padX, topY+blockH+rowGap, false, down)
 		}
 	case config.ModeDownload:
-		topY := (a.metrics.height - a.metrics.rowHeight) / 2
+		topY := (a.metrics.height - blockH) / 2
 		a.drawSpeedItem(gfx, a.metrics.padX, topY, false, down)
 	case config.ModeUpload:
-		topY := (a.metrics.height - a.metrics.rowHeight) / 2
+		topY := (a.metrics.height - blockH) / 2
 		a.drawSpeedItem(gfx, a.metrics.padX, topY, true, up)
 	}
 }
@@ -1117,6 +1254,12 @@ func (a *App) directionLabel(isUpload bool) string {
 }
 
 func (a *App) drawSpeedItem(gfx uintptr, startX, rowY int32, isUpload bool, speed network.FormattedSpeed) {
+	indX := startX
+	if a.metrics.splitUnit {
+		line1W := a.metrics.indicatorW + a.metrics.iconGap + a.metrics.valueWidth
+		indX = startX + (a.metrics.itemWidth-line1W)/2
+	}
+
 	if a.cfg.LabelStyle == config.LabelArrows {
 		bmp := a.downBitmap
 		if isUpload {
@@ -1127,7 +1270,7 @@ func (a *App) drawSpeedItem(gfx uintptr, startX, rowY int32, isUpload bool, spee
 			_, _, _ = procGdipDrawImageRectI.Call(
 				gfx,
 				bmp,
-				uintptr(startX),
+				uintptr(indX),
 				uintptr(iconY),
 				uintptr(a.metrics.iconSize),
 				uintptr(a.metrics.iconSize),
@@ -1141,16 +1284,14 @@ func (a *App) drawSpeedItem(gfx uintptr, startX, rowY int32, isUpload bool, spee
 		}
 		if fmtHandle != 0 {
 			gpDrawString(gfx, a.gpFont, fmtHandle, a.textBrush, label, gpRectF{
-				X: float32(startX), Y: float32(rowY),
+				X: float32(indX), Y: float32(rowY),
 				Width: float32(a.metrics.indicatorW), Height: float32(a.metrics.rowHeight),
 			})
 		}
 	}
 
-	valX := float32(startX + a.metrics.indicatorW + a.metrics.iconGap)
+	valX := float32(indX + a.metrics.indicatorW + a.metrics.iconGap)
 	valW := float32(a.metrics.valueWidth)
-	unitX := valX + valW + float32(a.metrics.unitGap)
-	unitW := float32(a.metrics.unitWidth)
 	rowF := float32(rowY)
 	rowHF := float32(a.metrics.rowHeight)
 
@@ -1160,7 +1301,22 @@ func (a *App) drawSpeedItem(gfx uintptr, startX, rowY int32, isUpload bool, spee
 				X: valX, Y: rowF, Width: valW, Height: rowHF,
 			})
 		}
-		if a.fmtNear != 0 {
+		if a.metrics.splitUnit {
+			unitFont := a.gpSubFont
+			if unitFont == 0 {
+				unitFont = a.gpFont
+			}
+			if a.fmtCenter != 0 {
+				gpDrawString(gfx, unitFont, a.fmtCenter, a.textBrush, speed.Unit, gpRectF{
+					X:      float32(startX),
+					Y:      float32(rowY + a.metrics.rowHeight),
+					Width:  float32(a.metrics.itemWidth),
+					Height: float32(a.metrics.subRowHeight),
+				})
+			}
+		} else if a.fmtNear != 0 {
+			unitX := valX + valW + float32(a.metrics.unitGap)
+			unitW := float32(a.metrics.unitWidth)
 			gpDrawString(gfx, a.gpFont, a.fmtNear, a.textBrush, speed.Unit, gpRectF{
 				X: unitX, Y: rowF, Width: unitW, Height: rowHF,
 			})
@@ -1279,7 +1435,7 @@ func (a *App) ApplyConfig(next config.Config) {
 		}
 	}
 
-	a.rebuildDrawingResources(a.currentDPI, a.isLightTheme, a.lastTaskbarHeight)
+	a.rebuildDrawingResources(a.currentDPI, a.isLightTheme, a.lastTaskbarWidth, a.lastTaskbarHeight)
 	a.hasPos = false
 	a.updateTrayTooltip()
 	a.renderAndPosition()
@@ -1340,6 +1496,10 @@ func (a *App) releaseRenderResources() {
 	if a.gpFont != 0 {
 		_, _, _ = procGdipDeleteFont.Call(a.gpFont)
 		a.gpFont = 0
+	}
+	if a.gpSubFont != 0 {
+		_, _, _ = procGdipDeleteFont.Call(a.gpSubFont)
+		a.gpSubFont = 0
 	}
 	if a.fmtFar != 0 {
 		_, _, _ = procGdipDeleteStringFormat.Call(a.fmtFar)

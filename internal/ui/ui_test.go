@@ -183,7 +183,7 @@ func TestOverlayRenderProducesPremultipliedPixels(t *testing.T) {
 		DownloadBytesPerSec: 12.5 * 1024 * 1024,
 		UploadBytesPerSec:   1.24 * 1024,
 	}
-	app.rebuildDrawingResources(96, false, 48)
+	app.rebuildDrawingResources(96, false, 1920, 48)
 	defer app.cleanupResources()
 
 	if app.gpFont == 0 {
@@ -240,7 +240,7 @@ func TestBitsUnitFormattingAndColumnSizing(t *testing.T) {
 	cfg.SpeedUnit = config.UnitBits
 	app := NewApp(cfg, "", network.NewMonitor(), false)
 	app.fontFamily = ResolveTaskbarFontName()
-	app.rebuildDrawingResources(96, false, 48)
+	app.rebuildDrawingResources(96, false, 1920, 48)
 	defer app.cleanupResources()
 
 	got := app.formatRate(3750000) // 30 Mbps
@@ -274,7 +274,7 @@ func TestLabelStylesAndLayoutsRenderCleanly(t *testing.T) {
 				DownloadBytesPerSec: 12.5 * 1024 * 1024,
 				UploadBytesPerSec:   2.4 * 1024 * 1024,
 			}
-			app.rebuildDrawingResources(96, false, 48)
+			app.rebuildDrawingResources(96, false, 1920, 48)
 
 			var gfx uintptr
 			st, _, _ := procGdipGetImageGraphicsContext.Call(app.gpBitmap, uintptr(unsafe.Pointer(&gfx)))
@@ -306,7 +306,7 @@ func TestLabelStylesAndLayoutsRenderCleanly(t *testing.T) {
 
 	stackedApp := NewApp(config.Default(), "", network.NewMonitor(), false)
 	stackedApp.fontFamily = ResolveTaskbarFontName()
-	stackedMetrics := stackedApp.computeMetrics(96, 48)
+	stackedMetrics := stackedApp.computeMetrics(96, 1920, 48)
 
 	for _, tc := range []struct {
 		name string
@@ -322,10 +322,94 @@ func TestLabelStylesAndLayoutsRenderCleanly(t *testing.T) {
 		cfg.Layout = tc.lay
 		singleApp := NewApp(cfg, "", network.NewMonitor(), false)
 		singleApp.fontFamily = stackedApp.fontFamily
-		m := singleApp.computeMetrics(96, 48)
+		m := singleApp.computeMetrics(96, 1920, 48)
 		if m.fontPx <= stackedMetrics.fontPx || m.iconSize <= stackedMetrics.iconSize {
 			t.Fatalf("%s metrics (%d font, %d icon) should be larger than stacked (%d font, %d icon)",
 				tc.name, m.fontPx, m.iconSize, stackedMetrics.fontPx, stackedMetrics.iconSize)
+		}
+	}
+
+	// Verify narrow Left & Right vertical taskbars adapt cleanly without horizontal overflow.
+	for _, tbW := range []int32{62, 76} {
+		for _, mode := range []config.DisplayMode{config.ModeBoth, config.ModeDownload, config.ModeUpload} {
+			for _, lay := range layouts {
+				for _, lbl := range labels {
+					cfg := config.Default()
+					cfg.DisplayMode = mode
+					cfg.Layout = lay
+					cfg.LabelStyle = lbl
+					vApp := NewApp(cfg, "", network.NewMonitor(), false)
+					vApp.fontFamily = stackedApp.fontFamily
+					vApp.currentSample = network.SpeedSample{
+						DownloadBytesPerSec: 125.4 * 1024 * 1024,
+						UploadBytesPerSec:   42.8 * 1024 * 1024,
+					}
+					vApp.rebuildDrawingResources(96, false, tbW, 1080)
+					if vApp.metrics.width > tbW {
+						vApp.cleanupResources()
+						t.Fatalf("vertical tbW=%d mode=%s lay=%s lbl=%s overflowed width %d",
+							tbW, mode, lay, lbl, vApp.metrics.width)
+					}
+					if vApp.metrics.effectiveInline {
+						vApp.cleanupResources()
+						t.Fatalf("vertical tbW=%d mode=%s lay=%s should not keep side-by-side inline",
+							tbW, mode, lay)
+					}
+
+					var gfx uintptr
+					st, _, _ := procGdipGetImageGraphicsContext.Call(vApp.gpBitmap, uintptr(unsafe.Pointer(&gfx)))
+					if st != 0 || gfx == 0 {
+						vApp.cleanupResources()
+						t.Fatalf("vertical GdipGetImageGraphicsContext failed: %d", st)
+					}
+					_, _, _ = procGdipGraphicsClear.Call(gfx, 0x01000000)
+					vApp.drawOverlayContent(
+						gfx,
+						vApp.formatRate(vApp.currentSample.UploadBytesPerSec),
+						vApp.formatRate(vApp.currentSample.DownloadBytesPerSec),
+					)
+					_, _, _ = procGdipDeleteGraphics.Call(gfx)
+
+					pixels := unsafe.Slice((*byte)(vApp.pBits), int(vApp.dibW)*int(vApp.dibH)*4)
+					fg := 0
+					for i := 0; i < len(pixels); i += 4 {
+						b, g, r, a := pixels[i], pixels[i+1], pixels[i+2], pixels[i+3]
+						if r > a || g > a || b > a {
+							vApp.cleanupResources()
+							t.Fatalf("vertical pixel not premultiplied: BGRA=(%d,%d,%d,%d)", b, g, r, a)
+						}
+						if a > 20 {
+							fg++
+						}
+					}
+					vApp.cleanupResources()
+					if fg == 0 {
+						t.Fatalf("vertical tbW=%d mode=%s lay=%s lbl=%s rendered 0 pixels", tbW, mode, lay, lbl)
+					}
+				}
+			}
+		}
+	}
+
+	// Verify Left & Right ComputeOverlayBounds keep overlay inside the vertical taskbar rect.
+	for _, side := range []struct {
+		name string
+		tb   rect
+		tray rect
+	}{
+		{"left", rect{Left: 0, Top: 0, Right: 62, Bottom: 1080}, rect{Left: 0, Top: 900, Right: 62, Bottom: 1080}},
+		{"right", rect{Left: 1858, Top: 0, Right: 1920, Bottom: 1080}, rect{Left: 1858, Top: 900, Right: 1920, Bottom: 1080}},
+	} {
+		vx, vy, vis := ComputeOverlayBounds(TaskbarInfo{
+			Valid:       true,
+			TaskbarRect: side.tb,
+			TrayRect:    side.tray,
+			MonitorRect: rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080},
+			DPI:         96,
+		}, 58, 76)
+		if !vis || vx < side.tb.Left || vx+58 > side.tb.Right || vy+76 > side.tray.Top {
+			t.Fatalf("%s vertical bounds invalid: (%d,%d) vis=%v tb=%+v tray=%+v",
+				side.name, vx, vy, vis, side.tb, side.tray)
 		}
 	}
 }
