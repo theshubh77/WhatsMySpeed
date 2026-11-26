@@ -1,5 +1,8 @@
 # WhatsMySpeed
 
+[![Sponsor](https://img.shields.io/badge/Sponsor-%40theshubh77-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/theshubh77)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A lightweight, native Windows 11 real-time internet speed monitor written in pure Go and Win32 APIs. **WhatsMySpeed** docks directly onto the Windows 11 taskbar to the left of the system tray overflow chevron (`^`), blending seamlessly with native Light and Dark taskbar themes.
 
 ## Features
@@ -103,6 +106,10 @@ Example:
 ## Contributing
 
 Contributions, bug reports, and pull requests are welcome! Please run `go test ./...` before submitting changes.
+
+## Sponsor
+
+If you find **WhatsMySpeed** useful and would like to support its development, you can sponsor [@theshubh77 on GitHub Sponsors](https://github.com/sponsors/theshubh77).
 
 ## License
 
