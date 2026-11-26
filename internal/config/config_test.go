@@ -22,25 +22,36 @@ func TestSaveToAndLoadFromRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "WhatsMySpeed", "config.json")
 	modes := []DisplayMode{ModeBoth, ModeDownload, ModeUpload, ModeHide}
 	units := []SpeedUnit{UnitBytes, UnitBits}
+	labels := []LabelStyle{LabelArrows, LabelUD, LabelWords}
+	layouts := []OverlayLayout{LayoutStackedUp, LayoutStackedDown, LayoutInline, LayoutCompact}
 
 	for _, mode := range modes {
 		for _, unit := range units {
-			want := Config{DisplayMode: mode, SpeedUnit: unit}
-			if err := SaveTo(path, want); err != nil {
-				t.Fatalf("SaveTo(%q, %q) failed: %v", mode, unit, err)
-			}
-			got, err := LoadFrom(path)
-			if err != nil {
-				t.Fatalf("LoadFrom(%q, %q) failed: %v", mode, unit, err)
-			}
-			if got.DisplayMode != want.DisplayMode || got.SpeedUnit != want.SpeedUnit {
-				t.Fatalf("config mismatch: got %+v, want %+v", got, want)
+			for _, label := range labels {
+				for _, layout := range layouts {
+					want := Config{
+						DisplayMode: mode,
+						SpeedUnit:   unit,
+						LabelStyle:  label,
+						Layout:      layout,
+					}
+					if err := SaveTo(path, want); err != nil {
+						t.Fatalf("SaveTo(%+v) failed: %v", want, err)
+					}
+					got, err := LoadFrom(path)
+					if err != nil {
+						t.Fatalf("LoadFrom(%+v) failed: %v", want, err)
+					}
+					if got != want {
+						t.Fatalf("config mismatch: got %+v, want %+v", got, want)
+					}
+				}
 			}
 		}
 	}
 }
 
-func TestLoadFromLegacyConfigDefaultsSpeedUnitToBytes(t *testing.T) {
+func TestLoadFromLegacyConfigDefaultsNewFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"display_mode":"download"}`), 0o644); err != nil {
 		t.Fatal(err)
@@ -50,7 +61,7 @@ func TestLoadFromLegacyConfigDefaultsSpeedUnitToBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.DisplayMode != ModeDownload || cfg.SpeedUnit != UnitBytes {
+	if cfg.DisplayMode != ModeDownload || cfg.SpeedUnit != UnitBytes || cfg.LabelStyle != LabelArrows || cfg.Layout != LayoutStackedUp {
 		t.Fatalf("unexpected config %+v", cfg)
 	}
 }

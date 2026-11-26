@@ -5,7 +5,15 @@ import (
 )
 
 const (
-	wsPopup = 0x80000000
+	wsPopup       = 0x80000000
+	wsOverlapped  = 0x00000000
+	wsCaption     = 0x00C00000
+	wsSysMenu     = 0x00080000
+	wsMinimizeBox = 0x00020000
+
+	csVRedraw = 0x0001
+	csHRedraw = 0x0002
+	csDblClks = 0x0008
 
 	wsExTopmost    = 0x00000008
 	wsExToolWindow = 0x00000080
@@ -14,32 +22,51 @@ const (
 
 	wmNull          = 0x0000
 	wmDestroy       = 0x0002
+	wmSize          = 0x0005
+	wmPaint         = 0x000F
 	wmClose         = 0x0010
+	wmEraseBkgnd    = 0x0014
 	wmSettingChange = 0x001A
+	wmSetCursor     = 0x0020
 	wmContextMenu   = 0x007B
 	wmDisplayChange = 0x007E
+	wmSetIcon       = 0x0080
 	wmTimer         = 0x0113
 	wmMouseMove     = 0x0200
+	wmLButtonDown   = 0x0201
 	wmLButtonUp     = 0x0202
+	wmLButtonDblClk = 0x0203
 	wmRButtonUp     = 0x0205
 	wmMouseLeave    = 0x02A3
 	wmDpiChanged    = 0x02E0
 	wmApp           = 0x8000
 
-	wmTrayCallback = wmApp + 1
+	wmTrayCallback    = wmApp + 1
+	wmSpeedTestUpdate = wmApp + 2
 
 	swHide         = 0
+	swShowNormal   = 1
 	swShowNoActive = 4
+	swRestore      = 9
 
-	hwndTopmost = ^uintptr(0) // (HWND)-1
-	swpNoSize   = 0x0001
-	swpNoMove   = 0x0002
+	iconSmall = 0
+	iconBig   = 1
+
+	hwndTopmost   = ^uintptr(0) // (HWND)-1
+	swpNoSize     = 0x0001
+	swpNoMove     = 0x0002
+	swpNoZOrder   = 0x0004
 	swpNoActivate = 0x0010
+	swpFrameChanged = 0x0020
 
 	gwHwndNext = 2
 
 	monitorDefaultToNearest = 2
 
+	smCxScreen = 0
+	smCyScreen = 1
+	smCxIcon   = 11
+	smCyIcon   = 12
 	smCxSmIcon = 49
 	smCySmIcon = 50
 
@@ -47,14 +74,16 @@ const (
 	acSrcOver  = 0x00
 	acSrcAlpha = 0x01
 
-	biRGB = 0
+	biRGB   = 0
+	srcCopy = 0x00CC0020
 
 	tmeLeave = 0x00000002
 
 	abmGetState = 0x00000004
 	absAutohide = 0x00000001
 
-	dwmwaCloaked = 14
+	dwmwaCloaked              = 14
+	dwmwaUseImmersiveDarkMode = 20
 
 	nimAdd        = 0x00000000
 	nimModify     = 0x00000001
@@ -69,6 +98,7 @@ const (
 
 	miimState   = 0x00000001
 	miimID      = 0x00000002
+	miimSubMenu = 0x00000004
 	miimFType   = 0x00000100
 	miimString  = 0x00000040
 
@@ -78,6 +108,7 @@ const (
 
 	mfsChecked   = 0x00000008
 	mfsUnchecked = 0x00000000
+	mfsDefault   = 0x00001000
 
 	tpmLeftAlign   = 0x0000
 	tpmBottomAlign = 0x0020
@@ -89,6 +120,7 @@ const (
 	dpiAwarenessPerMonitorAware   = ^uintptr(2) // -3
 
 	idcArrow = 32512
+	idcHand  = 32649
 
 	lfFaceSize = 32
 )
@@ -114,6 +146,7 @@ var (
 	procPostQuitMessage              = modUser32.NewProc("PostQuitMessage")
 	procRegisterWindowMessageW       = modUser32.NewProc("RegisterWindowMessageW")
 	procLoadCursorW                  = modUser32.NewProc("LoadCursorW")
+	procSetCursor                    = modUser32.NewProc("SetCursor")
 	procShowWindow                   = modUser32.NewProc("ShowWindow")
 	procIsWindowVisible              = modUser32.NewProc("IsWindowVisible")
 	procIsIconic                     = modUser32.NewProc("IsIconic")
@@ -123,6 +156,9 @@ var (
 	procFindWindowW                  = modUser32.NewProc("FindWindowW")
 	procFindWindowExW                = modUser32.NewProc("FindWindowExW")
 	procGetWindowRect                = modUser32.NewProc("GetWindowRect")
+	procGetClientRect                = modUser32.NewProc("GetClientRect")
+	procAdjustWindowRectEx           = modUser32.NewProc("AdjustWindowRectEx")
+	procAdjustWindowRectExForDpi     = modUser32.NewProc("AdjustWindowRectExForDpi")
 	procGetClassNameW                = modUser32.NewProc("GetClassNameW")
 	procGetForegroundWindow          = modUser32.NewProc("GetForegroundWindow")
 	procSetForegroundWindow          = modUser32.NewProc("SetForegroundWindow")
@@ -136,25 +172,33 @@ var (
 	procGetSystemMetricsForDpi       = modUser32.NewProc("GetSystemMetricsForDpi")
 	procGetDC                        = modUser32.NewProc("GetDC")
 	procReleaseDC                    = modUser32.NewProc("ReleaseDC")
+	procBeginPaint                   = modUser32.NewProc("BeginPaint")
+	procEndPaint                     = modUser32.NewProc("EndPaint")
+	procInvalidateRect               = modUser32.NewProc("InvalidateRect")
 	procUpdateLayeredWindow          = modUser32.NewProc("UpdateLayeredWindow")
 	procTrackMouseEvent              = modUser32.NewProc("TrackMouseEvent")
 	procGetCursorPos                 = modUser32.NewProc("GetCursorPos")
 	procCreatePopupMenu              = modUser32.NewProc("CreatePopupMenu")
 	procDestroyMenu                  = modUser32.NewProc("DestroyMenu")
 	procInsertMenuItemW              = modUser32.NewProc("InsertMenuItemW")
+	procSetMenuDefaultItem           = modUser32.NewProc("SetMenuDefaultItem")
 	procTrackPopupMenuEx             = modUser32.NewProc("TrackPopupMenuEx")
 	procDestroyIcon                  = modUser32.NewProc("DestroyIcon")
+	procSendMessageW                 = modUser32.NewProc("SendMessageW")
 
 	procCreateCompatibleDC = modGdi32.NewProc("CreateCompatibleDC")
 	procDeleteDC           = modGdi32.NewProc("DeleteDC")
 	procCreateDIBSection   = modGdi32.NewProc("CreateDIBSection")
 	procSelectObject       = modGdi32.NewProc("SelectObject")
 	procDeleteObject       = modGdi32.NewProc("DeleteObject")
+	procBitBlt             = modGdi32.NewProc("BitBlt")
 
 	procShellNotifyIconW = modShell32.NewProc("Shell_NotifyIconW")
 	procSHAppBarMessage  = modShell32.NewProc("SHAppBarMessage")
+	procShellExecuteW    = modShell32.NewProc("ShellExecuteW")
 
 	procDwmGetWindowAttribute = modDwmapi.NewProc("DwmGetWindowAttribute")
+	procDwmSetWindowAttribute = modDwmapi.NewProc("DwmSetWindowAttribute")
 )
 
 type point struct {
@@ -177,6 +221,19 @@ type rect struct {
 func (r rect) Width() int32  { return r.Right - r.Left }
 func (r rect) Height() int32 { return r.Bottom - r.Top }
 func (r rect) Empty() bool   { return r.Width() <= 0 || r.Height() <= 0 }
+func (r rect) Contains(x, y int32) bool {
+	return x >= r.Left && x < r.Right && y >= r.Top && y < r.Bottom
+}
+
+type paintStruct struct {
+	Hdc         uintptr
+	FErase      int32
+	RcPaint     rect
+	FRestore    int32
+	FIncUpdate  int32
+	RgbReserved [32]byte
+	_           uint32
+}
 
 type msg struct {
 	Hwnd    uintptr

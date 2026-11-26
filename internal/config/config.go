@@ -29,10 +29,31 @@ const (
 	UnitBits  SpeedUnit = "bits"
 )
 
+// LabelStyle controls how upload and download indicators are rendered on the taskbar.
+type LabelStyle string
+
+const (
+	LabelArrows LabelStyle = "arrows" // Phosphor up/down arrow icons
+	LabelUD     LabelStyle = "ud"     // Compact U / D letters
+	LabelWords  LabelStyle = "words"  // Full Up / Down labels
+)
+
+// OverlayLayout controls how speeds are arranged inside the taskbar overlay.
+type OverlayLayout string
+
+const (
+	LayoutStackedUp   OverlayLayout = "stacked_up"   // 2 rows: Upload on top, Download on bottom
+	LayoutStackedDown OverlayLayout = "stacked_down" // 2 rows: Download on top, Upload on bottom
+	LayoutInline      OverlayLayout = "inline"       // 1 row: side-by-side
+	LayoutCompact     OverlayLayout = "compact"      // 2 rows: tighter spacing & compact font
+)
+
 // Config holds persisted user preferences.
 type Config struct {
-	DisplayMode DisplayMode `json:"display_mode"`
-	SpeedUnit   SpeedUnit   `json:"speed_unit"`
+	DisplayMode DisplayMode   `json:"display_mode"`
+	SpeedUnit   SpeedUnit     `json:"speed_unit"`
+	LabelStyle  LabelStyle    `json:"label_style"`
+	Layout      OverlayLayout `json:"layout"`
 }
 
 // Default returns the default configuration.
@@ -40,6 +61,8 @@ func Default() Config {
 	return Config{
 		DisplayMode: ModeBoth,
 		SpeedUnit:   UnitBytes,
+		LabelStyle:  LabelArrows,
+		Layout:      LayoutStackedUp,
 	}
 }
 
@@ -61,6 +84,42 @@ func ValidSpeedUnit(unit SpeedUnit) bool {
 	default:
 		return false
 	}
+}
+
+// ValidLabelStyle reports whether style is one of the supported direction label styles.
+func ValidLabelStyle(style LabelStyle) bool {
+	switch style {
+	case LabelArrows, LabelUD, LabelWords:
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidLayout reports whether layout is one of the supported taskbar overlay layouts.
+func ValidLayout(layout OverlayLayout) bool {
+	switch layout {
+	case LayoutStackedUp, LayoutStackedDown, LayoutInline, LayoutCompact:
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeConfig(cfg Config) Config {
+	if !ValidDisplayMode(cfg.DisplayMode) {
+		cfg.DisplayMode = ModeBoth
+	}
+	if !ValidSpeedUnit(cfg.SpeedUnit) {
+		cfg.SpeedUnit = UnitBytes
+	}
+	if !ValidLabelStyle(cfg.LabelStyle) {
+		cfg.LabelStyle = LabelArrows
+	}
+	if !ValidLayout(cfg.Layout) {
+		cfg.Layout = LayoutStackedUp
+	}
+	return cfg
 }
 
 // ConfigPath returns the JSON config file path inside %APPDATA%\WhatsMySpeed\config.json.
@@ -96,13 +155,7 @@ func LoadFrom(path string) (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Default(), fmt.Errorf("parse config %q: %w", path, err)
 	}
-	if !ValidDisplayMode(cfg.DisplayMode) {
-		cfg.DisplayMode = ModeBoth
-	}
-	if !ValidSpeedUnit(cfg.SpeedUnit) {
-		cfg.SpeedUnit = UnitBytes
-	}
-	return cfg, nil
+	return normalizeConfig(cfg), nil
 }
 
 // Save writes cfg to the default %APPDATA%\WhatsMySpeed\config.json path.
@@ -116,12 +169,7 @@ func Save(cfg Config) error {
 
 // SaveTo atomically writes cfg as indented JSON to path.
 func SaveTo(path string, cfg Config) error {
-	if !ValidDisplayMode(cfg.DisplayMode) {
-		cfg.DisplayMode = ModeBoth
-	}
-	if !ValidSpeedUnit(cfg.SpeedUnit) {
-		cfg.SpeedUnit = UnitBytes
-	}
+	cfg = normalizeConfig(cfg)
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

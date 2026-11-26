@@ -20,21 +20,24 @@ const (
 )
 
 type layoutMetrics struct {
-	width       int32
-	height      int32
-	padX        int32
-	iconSize    int32
-	iconGap     int32
-	valueWidth  int32
-	unitGap     int32
-	unitWidth   int32
-	rowHeight   int32
-	rowGap      int32
-	cornerRad   int32
-	fontPx      int32
+	width      int32
+	height     int32
+	padX       int32
+	indicatorW int32
+	iconSize   int32
+	iconGap    int32
+	valueWidth int32
+	unitGap    int32
+	unitWidth  int32
+	itemWidth  int32
+	inlineGap  int32
+	rowHeight  int32
+	rowGap     int32
+	cornerRad  int32
+	fontPx     int32
 }
 
-// App manages the Win32 layered taskbar overlay, system tray icon, and 1-second refresh loop.
+// App manages the Win32 layered taskbar overlay, system tray icon, settings window, and 1-second refresh loop.
 type App struct {
 	cfgPath string
 	cfg     config.Config
@@ -45,6 +48,7 @@ type App struct {
 	hwnd              uintptr
 	wmTaskbarCreated  uint32
 	tray              *TrayManager
+	settings          *SettingsWindow
 	currentSample     network.SpeedSample
 	isLightTheme      bool
 	currentDPI        uint32
@@ -60,23 +64,24 @@ type App struct {
 
 	metrics layoutMetrics
 
-	// Cached GDI / GDI+ drawing resources (rebuilt only on DPI/theme/mode change).
-	memDC       uintptr
-	hBitmap     uintptr
-	oldBitmap   uintptr
-	pBits       unsafe.Pointer
-	gpBitmap    uintptr
-	dibW        int32
-	dibH        int32
-	gpFont      uintptr
-	fmtFar      uintptr
-	fmtNear     uintptr
-	textBrush   uintptr
-	hoverBrush  uintptr
-	upBitmap    uintptr
-	upBuf       []byte
-	downBitmap  uintptr
-	downBuf     []byte
+	// Cached GDI / GDI+ drawing resources (rebuilt only on DPI/theme/mode/layout change).
+	memDC      uintptr
+	hBitmap    uintptr
+	oldBitmap  uintptr
+	pBits      unsafe.Pointer
+	gpBitmap   uintptr
+	dibW       int32
+	dibH       int32
+	gpFont     uintptr
+	fmtFar     uintptr
+	fmtNear    uintptr
+	fmtCenter  uintptr
+	textBrush  uintptr
+	hoverBrush uintptr
+	upBitmap   uintptr
+	upBuf      []byte
+	downBitmap uintptr
+	downBuf    []byte
 }
 
 var (
@@ -132,6 +137,9 @@ func (a *App) Run() error {
 	a.tray = NewTrayManager(a.hwnd)
 	defer a.tray.Remove()
 
+	a.settings = NewSettingsWindow(a)
+	defer a.settings.Destroy()
+
 	a.refreshEnvironment(true)
 
 	// Take initial baseline reading immediately.
@@ -169,6 +177,7 @@ func (a *App) createWindow() error {
 	hCursor, _, _ := procLoadCursorW.Call(0, idcArrow)
 	wcx := wndClassExW{
 		CbSize:        uint32(unsafe.Sizeof(wndClassExW{})),
+		Style:         csDblClks,
 		LpfnWndProc:   windows.NewCallback(wndProc),
 		HInstance:     hInst,
 		HCursor:       hCursor,
@@ -242,23 +251,35 @@ func (a *App) handleMessage(message uint32, wParam, lParam uintptr) uintptr {
 		a.paintLayered()
 		return 0
 
+	case wmLButtonDblClk:
+		a.OpenSettingsWindow(false)
+		return 0
+
 	case wmRButtonUp, wmContextMenu:
 		a.openContextMenu()
 		return 0
 
 	case wmTrayCallback:
 		ev := uint32(loWord(lParam))
-		if ev == wmRButtonUp || ev == wmContextMenu || ev == wmLButtonUp {
+		if ev == wmRButtonUp || ev == wmContextMenu {
 			a.openContextMenu()
+		} else if ev == wmLButtonUp || ev == wmLButtonDblClk {
+			a.OpenSettingsWindow(false)
 		}
 		return 0
 
 	case wmSettingChange, wmDisplayChange, wmDpiChanged:
 		a.refreshEnvironment(false)
 		a.renderAndPosition()
+		if a.settings != nil {
+			a.settings.RefreshAppearance()
+		}
 		return 0
 
 	case wmClose:
+		if a.settings != nil {
+			a.settings.CancelSpeedTest()
+		}
 		_, _, _ = procDestroyWindow.Call(a.hwnd)
 		return 0
 
@@ -276,10 +297,13 @@ func (a *App) onSampleTick() {
 		a.currentSample = s
 	}
 
-	// Detect dynamic theme/DPI/taskbar changes cleanly.
 	a.refreshEnvironment(false)
 	a.updateTrayTooltip()
 	a.renderAndPosition()
+
+	if a.settings != nil {
+		a.settings.NotifySampleUpdated()
+	}
 }
 
 func (a *App) formatRate(bytesPerSec float64) network.FormattedSpeed {
@@ -348,6 +372,7 @@ func (a *App) rebuildDrawingResources(dpi uint32, isLight bool, taskbarHeight in
 
 	a.fmtFar, _ = gpCreateStringFormat(gpStringAlignmentFar, gpStringAlignmentCenter)
 	a.fmtNear, _ = gpCreateStringFormat(gpStringAlignmentNear, gpStringAlignmentCenter)
+	a.fmtCenter, _ = gpCreateStringFormat(gpStringAlignmentCenter, gpStringAlignmentCenter)
 	a.textBrush, _ = gpCreateSolidBrush(colors.TextARGB)
 	a.hoverBrush, _ = gpCreateSolidBrush(colors.HoverFillARGB)
 
@@ -368,25 +393,46 @@ func (a *App) rebuildDrawingResources(dpi uint32, isLight bool, taskbarHeight in
 }
 
 func (a *App) computeMetrics(dpi uint32, taskbarHeight int32) layoutMetrics {
+	isCompact := a.cfg.Layout == config.LayoutCompact
+	isInline := a.cfg.Layout == config.LayoutInline && a.cfg.DisplayMode == config.ModeBoth
+
 	m := layoutMetrics{
 		padX:      scaleDPIInt(8, dpi),
 		iconGap:   scaleDPIInt(4, dpi),
 		unitGap:   scaleDPIInt(3, dpi),
+		inlineGap: scaleDPIInt(10, dpi),
 		cornerRad: scaleDPIInt(5, dpi),
 	}
+	if isCompact {
+		m.padX = scaleDPIInt(6, dpi)
+		m.iconGap = scaleDPIInt(3, dpi)
+		m.unitGap = scaleDPIInt(2, dpi)
+	}
 
-	if a.cfg.DisplayMode == config.ModeBoth {
-		m.fontPx = scaleDPIInt(12, dpi)
-		m.iconSize = scaleDPIInt(10, dpi)
-		m.rowHeight = scaleDPIInt(15, dpi)
-		m.rowGap = scaleDPIInt(1, dpi)
-		m.height = m.rowHeight*2 + m.rowGap + scaleDPIInt(8, dpi)
-	} else {
+	switch {
+	case a.cfg.DisplayMode != config.ModeBoth || isInline:
 		m.fontPx = scaleDPIInt(13, dpi)
 		m.iconSize = scaleDPIInt(11, dpi)
 		m.rowHeight = scaleDPIInt(18, dpi)
 		m.rowGap = 0
 		m.height = scaleDPIInt(38, dpi)
+		if isCompact {
+			m.fontPx = scaleDPIInt(12, dpi)
+			m.iconSize = scaleDPIInt(10, dpi)
+			m.height = scaleDPIInt(32, dpi)
+		}
+	case isCompact:
+		m.fontPx = scaleDPIInt(11, dpi)
+		m.iconSize = scaleDPIInt(9, dpi)
+		m.rowHeight = scaleDPIInt(13, dpi)
+		m.rowGap = 0
+		m.height = m.rowHeight*2 + scaleDPIInt(6, dpi)
+	default:
+		m.fontPx = scaleDPIInt(12, dpi)
+		m.iconSize = scaleDPIInt(10, dpi)
+		m.rowHeight = scaleDPIInt(15, dpi)
+		m.rowGap = scaleDPIInt(1, dpi)
+		m.height = m.rowHeight*2 + m.rowGap + scaleDPIInt(8, dpi)
 	}
 
 	if taskbarHeight > 0 {
@@ -396,13 +442,19 @@ func (a *App) computeMetrics(dpi uint32, taskbarHeight int32) layoutMetrics {
 		}
 	}
 
-	// Measure max numeric and unit widths so horizontal columns stay rock-steady.
-	m.valueWidth, m.unitWidth = a.measureColumns(dpi, m.fontPx)
-	m.width = m.padX + m.iconSize + m.iconGap + m.valueWidth + m.unitGap + m.unitWidth + m.padX
+	m.indicatorW, m.valueWidth, m.unitWidth = a.measureColumns(dpi, m.fontPx, m.iconSize)
+	m.itemWidth = m.indicatorW + m.iconGap + m.valueWidth + m.unitGap + m.unitWidth
+
+	if isInline {
+		m.width = m.padX + m.itemWidth + m.inlineGap + m.itemWidth + m.padX
+	} else {
+		m.width = m.padX + m.itemWidth + m.padX
+	}
 	return m
 }
 
-func (a *App) measureColumns(dpi uint32, fontPx int32) (int32, int32) {
+func (a *App) measureColumns(dpi uint32, fontPx int32, iconSize int32) (int32, int32, int32) {
+	fallbackInd := iconSize
 	fallbackVal := scaleDPIInt(33, dpi)
 	fallbackUnit := scaleDPIInt(30, dpi)
 
@@ -410,14 +462,14 @@ func (a *App) measureColumns(dpi uint32, fontPx int32) (int32, int32) {
 	var bmp uintptr
 	st, _, _ := procGdipCreateBitmapFromScan0.Call(2, 2, 8, gpPixelFormat32bppPARGB, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&bmp)))
 	if st != 0 || bmp == 0 {
-		return fallbackVal, fallbackUnit
+		return fallbackInd, fallbackVal, fallbackUnit
 	}
 	defer procGdipDisposeImage.Call(bmp)
 
 	var gfx uintptr
 	st, _, _ = procGdipGetImageGraphicsContext.Call(bmp, uintptr(unsafe.Pointer(&gfx)))
 	if st != 0 || gfx == 0 {
-		return fallbackVal, fallbackUnit
+		return fallbackInd, fallbackVal, fallbackUnit
 	}
 	defer procGdipDeleteGraphics.Call(gfx)
 	_, _, _ = procGdipSetTextRenderingHint.Call(gfx, gpTextRenderingHintAntiAliasGridFit)
@@ -428,15 +480,37 @@ func (a *App) measureColumns(dpi uint32, fontPx int32) (int32, int32) {
 	}
 	font, err := gpCreateFontPx(screenDC, a.fontFamily, fontPx, 500)
 	if err != nil {
-		return fallbackVal, fallbackUnit
+		return fallbackInd, fallbackVal, fallbackUnit
 	}
 	defer procGdipDeleteFont.Call(font)
 
 	strFmt, err := gpCreateStringFormat(gpStringAlignmentNear, gpStringAlignmentCenter)
 	if err != nil {
-		return fallbackVal, fallbackUnit
+		return fallbackInd, fallbackVal, fallbackUnit
 	}
 	defer procGdipDeleteStringFormat.Call(strFmt)
+
+	indW := iconSize
+	switch a.cfg.LabelStyle {
+	case config.LabelUD:
+		var maxW float32
+		for _, s := range []string{"U", "D"} {
+			w, _ := gpMeasureString(gfx, font, strFmt, s)
+			if w > maxW {
+				maxW = w
+			}
+		}
+		indW = int32(math.Ceil(float64(maxW))) + scaleDPIInt(2, dpi)
+	case config.LabelWords:
+		var maxW float32
+		for _, s := range []string{"Up", "Down"} {
+			w, _ := gpMeasureString(gfx, font, strFmt, s)
+			if w > maxW {
+				maxW = w
+			}
+		}
+		indW = int32(math.Ceil(float64(maxW))) + scaleDPIInt(2, dpi)
+	}
 
 	var maxValW float32
 	for _, sample := range []string{"999.9", "1023", "88.8", "8.88"} {
@@ -467,7 +541,7 @@ func (a *App) measureColumns(dpi uint32, fontPx int32) (int32, int32) {
 	if unitW < fallbackUnit {
 		unitW = fallbackUnit
 	}
-	return valW, unitW
+	return indW, valW, unitW
 }
 
 func (a *App) ensureDIB(width, height int32) {
@@ -612,7 +686,7 @@ func (a *App) paintLayeredAt(x, y int32) {
 
 	_, _, _ = procGdipSetSmoothingMode.Call(gfx, gpSmoothingModeHighQuality)
 	_, _, _ = procGdipSetTextRenderingHint.Call(gfx, gpTextRenderingHintAntiAliasGridFit)
-	// Alpha=1 keeps the entire overlay rect hit-testable for right-clicks while remaining visually transparent.
+	// Alpha=1 keeps the entire overlay rect hit-testable for clicks while remaining visually transparent.
 	_, _, _ = procGdipGraphicsClear.Call(gfx, 0x01000000)
 
 	if a.isHovered && a.hoverBrush != 0 {
@@ -622,19 +696,7 @@ func (a *App) paintLayeredAt(x, y int32) {
 	down := a.formatRate(a.currentSample.DownloadBytesPerSec)
 	up := a.formatRate(a.currentSample.UploadBytesPerSec)
 
-	switch a.cfg.DisplayMode {
-	case config.ModeBoth:
-		totalRowsH := a.metrics.rowHeight*2 + a.metrics.rowGap
-		topY := (a.metrics.height - totalRowsH) / 2
-		a.drawSpeedRow(gfx, topY, a.upBitmap, up)
-		a.drawSpeedRow(gfx, topY+a.metrics.rowHeight+a.metrics.rowGap, a.downBitmap, down)
-	case config.ModeDownload:
-		topY := (a.metrics.height - a.metrics.rowHeight) / 2
-		a.drawSpeedRow(gfx, topY, a.downBitmap, down)
-	case config.ModeUpload:
-		topY := (a.metrics.height - a.metrics.rowHeight) / 2
-		a.drawSpeedRow(gfx, topY, a.upBitmap, up)
-	}
+	a.drawOverlayContent(gfx, up, down)
 
 	// Deleting Graphics commits all GDI+ drawing into the Scan0 DIB buffer before UpdateLayeredWindow.
 	_, _, _ = procGdipDeleteGraphics.Call(gfx)
@@ -667,21 +729,85 @@ func (a *App) paintLayeredAt(x, y int32) {
 	)
 }
 
-func (a *App) drawSpeedRow(gfx uintptr, rowY int32, iconBitmap uintptr, speed network.FormattedSpeed) {
-	iconX := a.metrics.padX
-	iconY := rowY + (a.metrics.rowHeight-a.metrics.iconSize)/2
-	if iconBitmap != 0 {
-		_, _, _ = procGdipDrawImageRectI.Call(
-			gfx,
-			iconBitmap,
-			uintptr(iconX),
-			uintptr(iconY),
-			uintptr(a.metrics.iconSize),
-			uintptr(a.metrics.iconSize),
-		)
+func (a *App) drawOverlayContent(gfx uintptr, up, down network.FormattedSpeed) {
+	switch a.cfg.DisplayMode {
+	case config.ModeBoth:
+		switch a.cfg.Layout {
+		case config.LayoutInline:
+			rowY := (a.metrics.height - a.metrics.rowHeight) / 2
+			leftX := a.metrics.padX
+			rightX := leftX + a.metrics.itemWidth + a.metrics.inlineGap
+			a.drawSpeedItem(gfx, leftX, rowY, true, up)
+			a.drawSpeedItem(gfx, rightX, rowY, false, down)
+		case config.LayoutStackedDown:
+			totalRowsH := a.metrics.rowHeight*2 + a.metrics.rowGap
+			topY := (a.metrics.height - totalRowsH) / 2
+			a.drawSpeedItem(gfx, a.metrics.padX, topY, false, down)
+			a.drawSpeedItem(gfx, a.metrics.padX, topY+a.metrics.rowHeight+a.metrics.rowGap, true, up)
+		default: // LayoutStackedUp, LayoutCompact
+			totalRowsH := a.metrics.rowHeight*2 + a.metrics.rowGap
+			topY := (a.metrics.height - totalRowsH) / 2
+			a.drawSpeedItem(gfx, a.metrics.padX, topY, true, up)
+			a.drawSpeedItem(gfx, a.metrics.padX, topY+a.metrics.rowHeight+a.metrics.rowGap, false, down)
+		}
+	case config.ModeDownload:
+		topY := (a.metrics.height - a.metrics.rowHeight) / 2
+		a.drawSpeedItem(gfx, a.metrics.padX, topY, false, down)
+	case config.ModeUpload:
+		topY := (a.metrics.height - a.metrics.rowHeight) / 2
+		a.drawSpeedItem(gfx, a.metrics.padX, topY, true, up)
+	}
+}
+
+func (a *App) directionLabel(isUpload bool) string {
+	switch a.cfg.LabelStyle {
+	case config.LabelUD:
+		if isUpload {
+			return "U"
+		}
+		return "D"
+	case config.LabelWords:
+		if isUpload {
+			return "Up"
+		}
+		return "Down"
+	default:
+		return ""
+	}
+}
+
+func (a *App) drawSpeedItem(gfx uintptr, startX, rowY int32, isUpload bool, speed network.FormattedSpeed) {
+	if a.cfg.LabelStyle == config.LabelArrows {
+		bmp := a.downBitmap
+		if isUpload {
+			bmp = a.upBitmap
+		}
+		if bmp != 0 {
+			iconY := rowY + (a.metrics.rowHeight-a.metrics.iconSize)/2
+			_, _, _ = procGdipDrawImageRectI.Call(
+				gfx,
+				bmp,
+				uintptr(startX),
+				uintptr(iconY),
+				uintptr(a.metrics.iconSize),
+				uintptr(a.metrics.iconSize),
+			)
+		}
+	} else if a.textBrush != 0 {
+		label := a.directionLabel(isUpload)
+		fmtHandle := a.fmtNear
+		if a.cfg.LabelStyle == config.LabelUD {
+			fmtHandle = a.fmtCenter
+		}
+		if fmtHandle != 0 {
+			gpDrawString(gfx, a.gpFont, fmtHandle, a.textBrush, label, gpRectF{
+				X: float32(startX), Y: float32(rowY),
+				Width: float32(a.metrics.indicatorW), Height: float32(a.metrics.rowHeight),
+			})
+		}
 	}
 
-	valX := float32(iconX + a.metrics.iconSize + a.metrics.iconGap)
+	valX := float32(startX + a.metrics.indicatorW + a.metrics.iconGap)
 	valW := float32(a.metrics.valueWidth)
 	unitX := valX + valW + float32(a.metrics.unitGap)
 	unitW := float32(a.metrics.unitWidth)
@@ -707,58 +833,85 @@ func (a *App) openContextMenu() {
 		return
 	}
 	autoStart, _ := config.IsAutoStartEnabled()
-	cmd := a.tray.ShowContextMenu(a.cfg.DisplayMode, a.cfg.SpeedUnit, autoStart)
+	cmd := a.tray.ShowContextMenu(a.cfg, autoStart)
 
+	next := a.cfg
 	switch cmd {
+	case cmdOpenWindow:
+		a.OpenSettingsWindow(false)
+		return
+	case cmdRunSpeedTest:
+		a.OpenSettingsWindow(true)
+		return
 	case cmdShowBoth:
-		a.setDisplayMode(config.ModeBoth)
+		next.DisplayMode = config.ModeBoth
 	case cmdDownloadOnly:
-		a.setDisplayMode(config.ModeDownload)
+		next.DisplayMode = config.ModeDownload
 	case cmdUploadOnly:
-		a.setDisplayMode(config.ModeUpload)
+		next.DisplayMode = config.ModeUpload
 	case cmdHideSpeed:
-		a.setDisplayMode(config.ModeHide)
+		next.DisplayMode = config.ModeHide
 	case cmdUnitBytes:
-		a.setSpeedUnit(config.UnitBytes)
+		next.SpeedUnit = config.UnitBytes
 	case cmdUnitBits:
-		a.setSpeedUnit(config.UnitBits)
+		next.SpeedUnit = config.UnitBits
+	case cmdLabelArrows:
+		next.LabelStyle = config.LabelArrows
+	case cmdLabelUD:
+		next.LabelStyle = config.LabelUD
+	case cmdLabelWords:
+		next.LabelStyle = config.LabelWords
+	case cmdLayoutStackU:
+		next.Layout = config.LayoutStackedUp
+	case cmdLayoutStackD:
+		next.Layout = config.LayoutStackedDown
+	case cmdLayoutInline:
+		next.Layout = config.LayoutInline
+	case cmdLayoutComp:
+		next.Layout = config.LayoutCompact
 	case cmdAutoStart:
 		_ = config.SetAutoStart(!autoStart)
+		if a.settings != nil {
+			a.settings.RefreshAppearance()
+		}
+		return
 	case cmdExit:
 		_, _, _ = procPostMessageW.Call(a.hwnd, wmClose, 0, 0)
-	}
-}
-
-func (a *App) setSpeedUnit(unit config.SpeedUnit) {
-	if !config.ValidSpeedUnit(unit) || a.cfg.SpeedUnit == unit {
+		return
+	default:
 		return
 	}
-	a.cfg.SpeedUnit = unit
-	if a.cfgPath != "" {
-		_ = config.SaveTo(a.cfgPath, a.cfg)
-	} else {
-		_ = config.Save(a.cfg)
-	}
 
-	a.rebuildDrawingResources(a.currentDPI, a.isLightTheme, a.lastTaskbarHeight)
-	a.hasPos = false
-	a.updateTrayTooltip()
-	a.renderAndPosition()
+	a.ApplyConfig(next)
 }
 
-func (a *App) setDisplayMode(mode config.DisplayMode) {
-	if !config.ValidDisplayMode(mode) || a.cfg.DisplayMode == mode {
+// ApplyConfig persists updated user preferences and refreshes the taskbar overlay, tray tooltip, and settings UI.
+func (a *App) ApplyConfig(next config.Config) {
+	if !config.ValidDisplayMode(next.DisplayMode) {
+		next.DisplayMode = a.cfg.DisplayMode
+	}
+	if !config.ValidSpeedUnit(next.SpeedUnit) {
+		next.SpeedUnit = a.cfg.SpeedUnit
+	}
+	if !config.ValidLabelStyle(next.LabelStyle) {
+		next.LabelStyle = a.cfg.LabelStyle
+	}
+	if !config.ValidLayout(next.Layout) {
+		next.Layout = a.cfg.Layout
+	}
+	if next == a.cfg {
 		return
 	}
+
 	wasHidden := a.cfg.DisplayMode == config.ModeHide
-	a.cfg.DisplayMode = mode
+	a.cfg = next
 	if a.cfgPath != "" {
 		_ = config.SaveTo(a.cfgPath, a.cfg)
 	} else {
 		_ = config.Save(a.cfg)
 	}
 
-	if wasHidden && mode != config.ModeHide {
+	if wasHidden && a.cfg.DisplayMode != config.ModeHide {
 		a.monitor.Reset()
 		if s, err := a.monitor.Sample(); err == nil {
 			a.currentSample = s
@@ -767,7 +920,20 @@ func (a *App) setDisplayMode(mode config.DisplayMode) {
 
 	a.rebuildDrawingResources(a.currentDPI, a.isLightTheme, a.lastTaskbarHeight)
 	a.hasPos = false
+	a.updateTrayTooltip()
 	a.renderAndPosition()
+
+	if a.settings != nil {
+		a.settings.RefreshAppearance()
+	}
+}
+
+// OpenSettingsWindow opens and focuses the WhatsMySpeed settings and speedtest window.
+func (a *App) OpenSettingsWindow(startSpeedTest bool) {
+	if a.settings == nil {
+		return
+	}
+	a.settings.Show(startSpeedTest)
 }
 
 func (a *App) releaseDIB() {
@@ -805,6 +971,10 @@ func (a *App) releaseRenderResources() {
 	if a.fmtNear != 0 {
 		_, _, _ = procGdipDeleteStringFormat.Call(a.fmtNear)
 		a.fmtNear = 0
+	}
+	if a.fmtCenter != 0 {
+		_, _, _ = procGdipDeleteStringFormat.Call(a.fmtCenter)
+		a.fmtCenter = 0
 	}
 	if a.textBrush != 0 {
 		_, _, _ = procGdipDeleteBrush.Call(a.textBrush)

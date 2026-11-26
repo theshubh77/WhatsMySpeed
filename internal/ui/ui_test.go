@@ -25,6 +25,9 @@ func TestWin32StructSizes(t *testing.T) {
 	if got := unsafe.Sizeof(appBarData{}); got != 48 {
 		t.Fatalf("sizeof(appBarData) = %d, want 48", got)
 	}
+	if got := unsafe.Sizeof(paintStruct{}); got != 72 {
+		t.Fatalf("sizeof(paintStruct) = %d, want 72", got)
+	}
 }
 
 func TestEmbeddedPhosphorIconsParseAndRasterize(t *testing.T) {
@@ -169,10 +172,11 @@ func TestOverlayRenderProducesPremultipliedPixels(t *testing.T) {
 	_, _, _ = procGdipSetTextRenderingHint.Call(gfx, gpTextRenderingHintAntiAliasGridFit)
 	_, _, _ = procGdipGraphicsClear.Call(gfx, 0x01000000)
 
-	totalRowsH := app.metrics.rowHeight*2 + app.metrics.rowGap
-	topY := (app.metrics.height - totalRowsH) / 2
-	app.drawSpeedRow(gfx, topY, app.upBitmap, app.formatRate(app.currentSample.UploadBytesPerSec))
-	app.drawSpeedRow(gfx, topY+app.metrics.rowHeight+app.metrics.rowGap, app.downBitmap, app.formatRate(app.currentSample.DownloadBytesPerSec))
+	app.drawOverlayContent(
+		gfx,
+		app.formatRate(app.currentSample.UploadBytesPerSec),
+		app.formatRate(app.currentSample.DownloadBytesPerSec),
+	)
 	_, _, _ = procGdipDeleteGraphics.Call(gfx)
 
 	pixels := unsafe.Slice((*byte)(app.pBits), int(app.dibW)*int(app.dibH)*4)
@@ -212,5 +216,106 @@ func TestBitsUnitFormattingAndColumnSizing(t *testing.T) {
 	}
 	if app.metrics.unitWidth <= 0 || app.metrics.width <= 0 {
 		t.Fatalf("unexpected bits metrics: %+v", app.metrics)
+	}
+}
+
+func TestLabelStylesAndLayoutsRenderCleanly(t *testing.T) {
+	token, err := StartupGDIPlus()
+	if err != nil {
+		t.Fatalf("StartupGDIPlus failed: %v", err)
+	}
+	defer ShutdownGDIPlus(token)
+
+	labels := []config.LabelStyle{config.LabelArrows, config.LabelUD, config.LabelWords}
+	layouts := []config.OverlayLayout{config.LayoutStackedUp, config.LayoutStackedDown, config.LayoutInline, config.LayoutCompact}
+
+	for _, lbl := range labels {
+		for _, lay := range layouts {
+			cfg := config.Default()
+			cfg.LabelStyle = lbl
+			cfg.Layout = lay
+
+			app := NewApp(cfg, "", network.NewMonitor())
+			app.fontFamily = ResolveTaskbarFontName()
+			app.currentSample = network.SpeedSample{
+				DownloadBytesPerSec: 12.5 * 1024 * 1024,
+				UploadBytesPerSec:   2.4 * 1024 * 1024,
+			}
+			app.rebuildDrawingResources(96, false, 48)
+
+			var gfx uintptr
+			st, _, _ := procGdipGetImageGraphicsContext.Call(app.gpBitmap, uintptr(unsafe.Pointer(&gfx)))
+			if st != 0 || gfx == 0 {
+				app.cleanupResources()
+				t.Fatalf("GdipGetImageGraphicsContext(%s, %s) failed: %d", lbl, lay, st)
+			}
+			_, _, _ = procGdipGraphicsClear.Call(gfx, 0x01000000)
+			app.drawOverlayContent(
+				gfx,
+				app.formatRate(app.currentSample.UploadBytesPerSec),
+				app.formatRate(app.currentSample.DownloadBytesPerSec),
+			)
+			_, _, _ = procGdipDeleteGraphics.Call(gfx)
+
+			pixels := unsafe.Slice((*byte)(app.pBits), int(app.dibW)*int(app.dibH)*4)
+			fg := 0
+			for i := 0; i < len(pixels); i += 4 {
+				if pixels[i+3] > 20 {
+					fg++
+				}
+			}
+			app.cleanupResources()
+			if fg == 0 {
+				t.Fatalf("label=%s layout=%s rendered 0 foreground pixels", lbl, lay)
+			}
+		}
+	}
+}
+
+func TestSettingsWindowSceneAndHitTest(t *testing.T) {
+	token, err := StartupGDIPlus()
+	if err != nil {
+		t.Fatalf("StartupGDIPlus failed: %v", err)
+	}
+	defer ShutdownGDIPlus(token)
+
+	app := NewApp(config.Default(), "", network.NewMonitor())
+	app.fontFamily = ResolveTaskbarFontName()
+	app.currentSample = network.SpeedSample{
+		DownloadBytesPerSec: 3_750_000,
+		UploadBytesPerSec:   1_500_000,
+		ActiveInterfaces:    1,
+	}
+
+	sw := NewSettingsWindow(app)
+	sw.dpi = 96
+	sw.clientW = baseWindowW
+	sw.clientH = baseWindowH
+	defer sw.releaseDrawResources()
+
+	for _, isLight := range []bool{false, true} {
+		sw.ensureDrawResources(96, isLight)
+		if sw.gpBitmap == 0 {
+			t.Fatalf("ensureDrawResources(light=%v) failed", isLight)
+		}
+		var gfx uintptr
+		st, _, _ := procGdipGetImageGraphicsContext.Call(sw.gpBitmap, uintptr(unsafe.Pointer(&gfx)))
+		if st != 0 || gfx == 0 {
+			t.Fatalf("GdipGetImageGraphicsContext failed: %d", st)
+		}
+		sw.renderScene(gfx, sw.clientW, sw.clientH, 96, isLight)
+		_, _, _ = procGdipDeleteGraphics.Call(gfx)
+
+		if len(sw.controls) < 15 {
+			t.Fatalf("expected >=15 interactive controls, got %d", len(sw.controls))
+		}
+		// Verify every control hit-tests cleanly at its center.
+		for _, c := range sw.controls {
+			cx := (c.bounds.Left + c.bounds.Right) / 2
+			cy := (c.bounds.Top + c.bounds.Bottom) / 2
+			if got := sw.hitTest(cx, cy); got != c.action {
+				t.Fatalf("hitTest(%d,%d) = %v, want %v", cx, cy, got, c.action)
+			}
+		}
 	}
 }

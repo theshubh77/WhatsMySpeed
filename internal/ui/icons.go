@@ -753,7 +753,13 @@ func RasterizeSVGToBitmap(assetPath string, width, height int32, argb uint32) (u
 // for the system tray at the given DPI. Caller must destroy the returned HICON with DestroyIcon.
 func CreateTrayHICON(assetPath string, dpi uint32, argb uint32) (uintptr, error) {
 	w, h := getSmallIconMetrics(dpi)
-	gpBitmap, buf, err := RasterizeSVGToBitmap(assetPath, w, h, argb)
+	return CreateSizedHICON(assetPath, w, h, argb)
+}
+
+// CreateSizedHICON rasterizes an embedded Phosphor SVG into an HICON of exact pixel dimensions.
+// Caller must destroy the returned HICON with DestroyIcon.
+func CreateSizedHICON(assetPath string, width, height int32, argb uint32) (uintptr, error) {
+	gpBitmap, buf, err := RasterizeSVGToBitmap(assetPath, width, height, argb)
 	if err != nil {
 		return 0, err
 	}

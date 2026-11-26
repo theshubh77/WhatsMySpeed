@@ -12,14 +12,23 @@ import (
 const (
 	trayIconID uint32 = 1
 
+	cmdOpenWindow   uint32 = 1000
 	cmdShowBoth     uint32 = 1001
 	cmdDownloadOnly uint32 = 1002
 	cmdUploadOnly   uint32 = 1003
 	cmdHideSpeed    uint32 = 1004
 	cmdUnitBytes    uint32 = 1005
 	cmdUnitBits     uint32 = 1006
-	cmdAutoStart    uint32 = 1007
-	cmdExit         uint32 = 1008
+	cmdLabelArrows  uint32 = 1007
+	cmdLabelUD      uint32 = 1008
+	cmdLabelWords   uint32 = 1009
+	cmdLayoutStackU uint32 = 1010
+	cmdLayoutStackD uint32 = 1011
+	cmdLayoutInline uint32 = 1012
+	cmdLayoutComp   uint32 = 1013
+	cmdRunSpeedTest uint32 = 1014
+	cmdAutoStart    uint32 = 1015
+	cmdExit         uint32 = 1016
 )
 
 // TrayManager owns the Shell_NotifyIconW icon and popup context menu.
@@ -112,18 +121,18 @@ func (t *TrayManager) Remove() {
 	}
 }
 
-func insertMenuItem(hMenu uintptr, pos uint32, id uint32, text string, fType uint32, checked bool) error {
+func insertMenuItem(hMenu uintptr, pos uint32, id uint32, text string, fType uint32, state uint32, subMenu uintptr) error {
 	var mii menuItemInfoW
 	mii.CbSize = uint32(unsafe.Sizeof(mii))
 	mii.FMask = miimFType | miimID | miimState
 	mii.FType = fType
 	mii.WID = id
-	if checked {
-		mii.FState = mfsChecked
-	} else {
-		mii.FState = mfsUnchecked
-	}
+	mii.FState = state
 
+	if subMenu != 0 {
+		mii.FMask |= miimSubMenu
+		mii.HSubMenu = subMenu
+	}
 	if fType != mftSeparator {
 		mii.FMask |= miimString
 		u16, err := windows.UTF16PtrFromString(text)
@@ -140,26 +149,72 @@ func insertMenuItem(hMenu uintptr, pos uint32, id uint32, text string, fType uin
 	return nil
 }
 
+func checkState(checked bool) uint32 {
+	if checked {
+		return mfsChecked
+	}
+	return mfsUnchecked
+}
+
 // ShowContextMenu displays the native Win32 popup menu at the current cursor position
 // and returns the selected command ID (or 0 if dismissed).
-func (t *TrayManager) ShowContextMenu(mode config.DisplayMode, unit config.SpeedUnit, autoStart bool) uint32 {
+func (t *TrayManager) ShowContextMenu(cfg config.Config, autoStart bool) uint32 {
 	hMenu, _, _ := procCreatePopupMenu.Call()
 	if hMenu == 0 {
 		return 0
 	}
 	defer procDestroyMenu.Call(hMenu)
 
-	_ = insertMenuItem(hMenu, 0, cmdShowBoth, "Show Both", mftString|mftRadioCheck, mode == config.ModeBoth)
-	_ = insertMenuItem(hMenu, 1, cmdDownloadOnly, "Download Only", mftString|mftRadioCheck, mode == config.ModeDownload)
-	_ = insertMenuItem(hMenu, 2, cmdUploadOnly, "Upload Only", mftString|mftRadioCheck, mode == config.ModeUpload)
-	_ = insertMenuItem(hMenu, 3, cmdHideSpeed, "Hide Speed", mftString|mftRadioCheck, mode == config.ModeHide)
-	_ = insertMenuItem(hMenu, 4, 0, "", mftSeparator, false)
-	_ = insertMenuItem(hMenu, 5, cmdUnitBytes, "Bytes/s (KB/s, MB/s)", mftString|mftRadioCheck, unit == config.UnitBytes)
-	_ = insertMenuItem(hMenu, 6, cmdUnitBits, "Bits/s (Kbps, Mbps)", mftString|mftRadioCheck, unit == config.UnitBits)
-	_ = insertMenuItem(hMenu, 7, 0, "", mftSeparator, false)
-	_ = insertMenuItem(hMenu, 8, cmdAutoStart, "Start with Windows", mftString, autoStart)
-	_ = insertMenuItem(hMenu, 9, 0, "", mftSeparator, false)
-	_ = insertMenuItem(hMenu, 10, cmdExit, "Exit", mftString, false)
+	labelSub, _, _ := procCreatePopupMenu.Call()
+	if labelSub != 0 {
+		_ = insertMenuItem(labelSub, 0, cmdLabelArrows, "Arrows (↑ ↓)", mftString|mftRadioCheck, checkState(cfg.LabelStyle == config.LabelArrows), 0)
+		_ = insertMenuItem(labelSub, 1, cmdLabelUD, "U / D", mftString|mftRadioCheck, checkState(cfg.LabelStyle == config.LabelUD), 0)
+		_ = insertMenuItem(labelSub, 2, cmdLabelWords, "Up / Down", mftString|mftRadioCheck, checkState(cfg.LabelStyle == config.LabelWords), 0)
+	}
+
+	layoutSub, _, _ := procCreatePopupMenu.Call()
+	if layoutSub != 0 {
+		_ = insertMenuItem(layoutSub, 0, cmdLayoutStackU, "Stacked (Up / Down)", mftString|mftRadioCheck, checkState(cfg.Layout == config.LayoutStackedUp), 0)
+		_ = insertMenuItem(layoutSub, 1, cmdLayoutStackD, "Stacked (Down / Up)", mftString|mftRadioCheck, checkState(cfg.Layout == config.LayoutStackedDown), 0)
+		_ = insertMenuItem(layoutSub, 2, cmdLayoutInline, "Inline (Side by Side)", mftString|mftRadioCheck, checkState(cfg.Layout == config.LayoutInline), 0)
+		_ = insertMenuItem(layoutSub, 3, cmdLayoutComp, "Compact", mftString|mftRadioCheck, checkState(cfg.Layout == config.LayoutCompact), 0)
+	}
+
+	unitSub, _, _ := procCreatePopupMenu.Call()
+	if unitSub != 0 {
+		_ = insertMenuItem(unitSub, 0, cmdUnitBytes, "Bytes/s (KB/s, MB/s)", mftString|mftRadioCheck, checkState(cfg.SpeedUnit == config.UnitBytes), 0)
+		_ = insertMenuItem(unitSub, 1, cmdUnitBits, "Bits/s (Kbps, Mbps)", mftString|mftRadioCheck, checkState(cfg.SpeedUnit == config.UnitBits), 0)
+	}
+
+	pos := uint32(0)
+	add := func(id uint32, text string, fType, state uint32, sub uintptr) {
+		_ = insertMenuItem(hMenu, pos, id, text, fType, state, sub)
+		pos++
+	}
+
+	add(cmdOpenWindow, "Open WhatsMySpeed", mftString, mfsDefault, 0)
+	add(cmdRunSpeedTest, "Run Speed Test...", mftString, mfsUnchecked, 0)
+	add(0, "", mftSeparator, mfsUnchecked, 0)
+	add(cmdShowBoth, "Show Both", mftString|mftRadioCheck, checkState(cfg.DisplayMode == config.ModeBoth), 0)
+	add(cmdDownloadOnly, "Download Only", mftString|mftRadioCheck, checkState(cfg.DisplayMode == config.ModeDownload), 0)
+	add(cmdUploadOnly, "Upload Only", mftString|mftRadioCheck, checkState(cfg.DisplayMode == config.ModeUpload), 0)
+	add(cmdHideSpeed, "Hide Speed", mftString|mftRadioCheck, checkState(cfg.DisplayMode == config.ModeHide), 0)
+	add(0, "", mftSeparator, mfsUnchecked, 0)
+	if labelSub != 0 {
+		add(0, "Label Style", mftString, mfsUnchecked, labelSub)
+	}
+	if layoutSub != 0 {
+		add(0, "Layout", mftString, mfsUnchecked, layoutSub)
+	}
+	if unitSub != 0 {
+		add(0, "Speed Unit", mftString, mfsUnchecked, unitSub)
+	}
+	add(0, "", mftSeparator, mfsUnchecked, 0)
+	add(cmdAutoStart, "Start with Windows", mftString, checkState(autoStart), 0)
+	add(0, "", mftSeparator, mfsUnchecked, 0)
+	add(cmdExit, "Exit", mftString, mfsUnchecked, 0)
+
+	_, _, _ = procSetMenuDefaultItem.Call(hMenu, 0, 1)
 
 	var pt point
 	_, _, _ = procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
