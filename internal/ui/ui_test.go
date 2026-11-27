@@ -1052,3 +1052,73 @@ func TestTaskbarRegionClippingGuard(t *testing.T) {
 		t.Fatal("expected child inside SetWindowRgn [800..1000] not to be detected as clipped")
 	}
 }
+
+func TestOwnerDrawMenuStructsAndIconRendering(t *testing.T) {
+	if got := unsafe.Sizeof(measureItemStruct{}); got != 32 {
+		t.Fatalf("sizeof(measureItemStruct) = %d, want 32", got)
+	}
+	if got := unsafe.Sizeof(drawItemStruct{}); got != 64 {
+		t.Fatalf("sizeof(drawItemStruct) = %d, want 64", got)
+	}
+	if got := unsafe.Sizeof(menuInfoW{}); got != 40 {
+		t.Fatalf("sizeof(menuInfoW) = %d, want 40", got)
+	}
+
+	token, err := StartupGDIPlus()
+	if err != nil {
+		t.Fatalf("StartupGDIPlus failed: %v", err)
+	}
+	defer ShutdownGDIPlus(token)
+
+	tray := NewTrayManager(0)
+	tray.menuFont = ResolveTaskbarFontName()
+
+	items := []ownerMenuItem{
+		{id: cmdShowBoth, text: "Show Both", isRadio: true, checked: true},
+		{text: "Label Style", hasSubmenu: true},
+		{id: cmdAutoStart, text: "Start with Windows", checked: true},
+		{isSep: true},
+	}
+
+	for _, themeMode := range []config.ThemeMode{config.ThemeDark, config.ThemeLight} {
+		cfg := config.Default()
+		cfg.Theme = themeMode
+		tray.menuColors = resolveMenuPalette(cfg)
+		tray.menuItems = items
+		tray.measureAllMenuItems(120, tray.menuFont)
+
+		for idx, it := range tray.menuItems {
+			if it.width == 0 || it.height == 0 {
+				t.Fatalf("menu item %d (%q) invalid measured size: %dx%d", idx, it.text, it.width, it.height)
+			}
+			w, h := int32(220), int32(it.height)
+			buf := make([]byte, int(w)*int(h)*4)
+			var bmp uintptr
+			st, _, _ := procGdipCreateBitmapFromScan0.Call(uintptr(w), uintptr(h), uintptr(w*4), gpPixelFormat32bppPARGB, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&bmp)))
+			if st != 0 || bmp == 0 {
+				t.Fatalf("GdipCreateBitmapFromScan0 failed: %d", st)
+			}
+			var gfx uintptr
+			st, _, _ = procGdipGetImageGraphicsContext.Call(bmp, uintptr(unsafe.Pointer(&gfx)))
+			if st != 0 || gfx == 0 {
+				_, _, _ = procGdipDisposeImage.Call(bmp)
+				t.Fatalf("GdipGetImageGraphicsContext failed: %d", st)
+			}
+			tray.drawOwnerMenuItem(gfx, rect{Left: 0, Top: 0, Right: w, Bottom: h}, 120, it, idx == 1, it.checked)
+			_, _, _ = procGdipDeleteGraphics.Call(gfx)
+			_, _, _ = procGdipDisposeImage.Call(bmp)
+
+			// Verify non-uniform pixels (visible text/icon/divider) were drawn.
+			firstBGRA := [4]byte{buf[0], buf[1], buf[2], buf[3]}
+			diff := 0
+			for p := 0; p < len(buf); p += 4 {
+				if buf[p] != firstBGRA[0] || buf[p+1] != firstBGRA[1] || buf[p+2] != firstBGRA[2] {
+					diff++
+				}
+			}
+			if diff == 0 {
+				t.Fatalf("theme=%s menu item %d (%q) rendered blank", themeMode, idx, it.text)
+			}
+		}
+	}
+}

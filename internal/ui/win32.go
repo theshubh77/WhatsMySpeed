@@ -42,6 +42,8 @@ const (
 	wmContextMenu           = 0x007B
 	wmDisplayChange         = 0x007E
 	wmSetIcon               = 0x0080
+	wmMeasureItem           = 0x002C
+	wmDrawItem              = 0x002B
 	wmTimer                 = 0x0113
 	wmMouseMove             = 0x0200
 	wmLButtonUp             = 0x0202
@@ -96,10 +98,11 @@ const (
 
 	monitorDefaultToNearest = 2
 
-	smCxScreen = 0
-	smCyScreen = 1
-	smCxSmIcon = 49
-	smCySmIcon = 50
+	smCxScreen    = 0
+	smCyScreen    = 1
+	smCxSmIcon    = 49
+	smCySmIcon    = 50
+	smCxMenuCheck = 71
 
 	ulwAlpha   = 0x00000002
 	acSrcOver  = 0x00
@@ -148,10 +151,27 @@ const (
 	miimSubMenu = 0x00000004
 	miimFType   = 0x00000100
 	miimString  = 0x00000040
+	miimData    = 0x00000020
 
 	mftString     = 0x00000000
+	mftOwnerDraw  = 0x00000100
 	mftSeparator  = 0x00000800
 	mftRadioCheck = 0x00000200
+
+	odtMenu     = 1
+	odsSelected = 0x0001
+	odsGrayed   = 0x0002
+	odsDisabled = 0x0004
+	odsChecked  = 0x0008
+
+	mimBackground      = 0x00000002
+	mimApplyToSubmenus = 0x80000000
+
+	colorMenu          = 4
+	colorMenuText      = 7
+	colorHighlight     = 13
+	colorHighlightText = 14
+	colorGrayText      = 17
 
 	mfsChecked   = 0x00000008
 	mfsUnchecked = 0x00000000
@@ -244,6 +264,7 @@ var (
 	procDestroyMenu                  = modUser32.NewProc("DestroyMenu")
 	procInsertMenuItemW              = modUser32.NewProc("InsertMenuItemW")
 	procSetMenuDefaultItem           = modUser32.NewProc("SetMenuDefaultItem")
+	procSetMenuInfo                  = modUser32.NewProc("SetMenuInfo")
 	procTrackPopupMenuEx             = modUser32.NewProc("TrackPopupMenuEx")
 	procDestroyIcon                  = modUser32.NewProc("DestroyIcon")
 	procSendMessageW                 = modUser32.NewProc("SendMessageW")
@@ -255,11 +276,13 @@ var (
 	procCreateCompatibleDC = modGdi32.NewProc("CreateCompatibleDC")
 	procDeleteDC           = modGdi32.NewProc("DeleteDC")
 	procCreateDIBSection   = modGdi32.NewProc("CreateDIBSection")
+	procCreateSolidBrush   = modGdi32.NewProc("CreateSolidBrush")
 	procSelectObject       = modGdi32.NewProc("SelectObject")
 	procDeleteObject       = modGdi32.NewProc("DeleteObject")
 	procBitBlt             = modGdi32.NewProc("BitBlt")
 	procCreateRectRgn      = modGdi32.NewProc("CreateRectRgn")
 	procRectInRegion       = modGdi32.NewProc("RectInRegion")
+	procExcludeClipRect    = modGdi32.NewProc("ExcludeClipRect")
 
 	procShellNotifyIconW             = modShell32.NewProc("Shell_NotifyIconW")
 	procSHAppBarMessage              = modShell32.NewProc("SHAppBarMessage")
@@ -388,6 +411,37 @@ type highContrastW struct {
 	CbSize            uint32
 	DwFlags           uint32
 	LpszDefaultScheme uintptr
+}
+
+type measureItemStruct struct {
+	CtlType    uint32
+	CtlID      uint32
+	ItemID     uint32
+	ItemWidth  uint32
+	ItemHeight uint32
+	ItemData   uintptr
+}
+
+type drawItemStruct struct {
+	CtlType    uint32
+	CtlID      uint32
+	ItemID     uint32
+	ItemAction uint32
+	ItemState  uint32
+	HwndItem   uintptr
+	HDC        uintptr
+	RcItem     rect
+	ItemData   uintptr
+}
+
+type menuInfoW struct {
+	CbSize          uint32
+	FMask           uint32
+	DwStyle         uint32
+	CyMax           uint32
+	HbrBack         uintptr
+	DwContextHelpID uint32
+	DwMenuData      uintptr
 }
 
 type menuItemInfoW struct {
@@ -600,6 +654,32 @@ func copyRectFromLParam(lParam uintptr) (rect, bool) {
 	var r rect
 	_, _, _ = procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&r)), lParam, unsafe.Sizeof(r))
 	return r, true
+}
+
+func copyMeasureItemFromLParam(lParam uintptr) (measureItemStruct, bool) {
+	if lParam == 0 || procRtlMoveMemory.Find() != nil {
+		return measureItemStruct{}, false
+	}
+	var m measureItemStruct
+	_, _, _ = procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&m)), lParam, unsafe.Sizeof(m))
+	return m, true
+}
+
+func writeMeasureItemToLParam(lParam uintptr, m measureItemStruct) bool {
+	if lParam == 0 || procRtlMoveMemory.Find() != nil {
+		return false
+	}
+	_, _, _ = procRtlMoveMemory.Call(lParam, uintptr(unsafe.Pointer(&m)), unsafe.Sizeof(m))
+	return true
+}
+
+func copyDrawItemFromLParam(lParam uintptr) (drawItemStruct, bool) {
+	if lParam == 0 || procRtlMoveMemory.Find() != nil {
+		return drawItemStruct{}, false
+	}
+	var d drawItemStruct
+	_, _, _ = procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&d)), lParam, unsafe.Sizeof(d))
+	return d, true
 }
 
 func isTaskbarRegionClippingChild(taskbarHWND uintptr, localChild rect) bool {

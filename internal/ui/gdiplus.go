@@ -30,6 +30,7 @@ var (
 	procGdipDisposeImage              = modGdiplus.NewProc("GdipDisposeImage")
 	procGdipCreateHICONFromBitmap     = modGdiplus.NewProc("GdipCreateHICONFromBitmap")
 	procGdipGetImageGraphicsContext   = modGdiplus.NewProc("GdipGetImageGraphicsContext")
+	procGdipCreateFromHDC             = modGdiplus.NewProc("GdipCreateFromHDC")
 	procGdipDeleteGraphics            = modGdiplus.NewProc("GdipDeleteGraphics")
 	procGdipGraphicsClear             = modGdiplus.NewProc("GdipGraphicsClear")
 	procGdipSetSmoothingMode          = modGdiplus.NewProc("GdipSetSmoothingMode")
@@ -59,6 +60,7 @@ var (
 	procGdipAddPathLineI              = modGdiplus.NewProc("GdipAddPathLineI")
 	procGdipAddPathBeziersI           = modGdiplus.NewProc("GdipAddPathBeziersI")
 	procGdipFillPath                  = modGdiplus.NewProc("GdipFillPath")
+	procGdipFillEllipseI              = modGdiplus.NewProc("GdipFillEllipseI")
 	procGdipCreateMatrix3I            = modGdiplus.NewProc("GdipCreateMatrix3I")
 	procGdipDeleteMatrix              = modGdiplus.NewProc("GdipDeleteMatrix")
 	procGdipTransformPath             = modGdiplus.NewProc("GdipTransformPath")
@@ -352,5 +354,45 @@ func gpFillRoundedRect(graphics, brush uintptr, x, y, w, h, r int32) {
 		gpPointI{x0, y1 - r},
 	)
 	_, _, _ = procGdipClosePathFigure.Call(path)
+	_, _, _ = procGdipFillPath.Call(graphics, brush, path)
+}
+
+func gpFillScaledPolygon(graphics, brush uintptr, pts []gpPointI, srcSize, destX, destY, destW, destH int32) {
+	if len(pts) < 3 || srcSize <= 0 || destW <= 0 || destH <= 0 || brush == 0 {
+		return
+	}
+	var path uintptr
+	if st, _, _ := procGdipCreatePath.Call(gpFillModeWinding, uintptr(unsafe.Pointer(&path))); st != 0 || path == 0 {
+		return
+	}
+	defer procGdipDeletePath.Call(path)
+
+	_, _, _ = procGdipStartPathFigure.Call(path)
+	for i := 0; i < len(pts); i++ {
+		next := pts[(i+1)%len(pts)]
+		_, _, _ = procGdipAddPathLineI.Call(
+			path,
+			uintptr(pts[i].X), uintptr(pts[i].Y),
+			uintptr(next.X), uintptr(next.Y),
+		)
+	}
+	_, _, _ = procGdipClosePathFigure.Call(path)
+
+	srcRect := gpRectI{X: 0, Y: 0, Width: srcSize, Height: srcSize}
+	dstPlg := [3]gpPointI{
+		{X: destX, Y: destY},
+		{X: destX + destW, Y: destY},
+		{X: destX, Y: destY + destH},
+	}
+	var matrix uintptr
+	st, _, _ := procGdipCreateMatrix3I.Call(
+		uintptr(unsafe.Pointer(&srcRect)),
+		uintptr(unsafe.Pointer(&dstPlg[0])),
+		uintptr(unsafe.Pointer(&matrix)),
+	)
+	if st == 0 && matrix != 0 {
+		_, _, _ = procGdipTransformPath.Call(path, matrix)
+		_, _, _ = procGdipDeleteMatrix.Call(matrix)
+	}
 	_, _, _ = procGdipFillPath.Call(graphics, brush, path)
 }

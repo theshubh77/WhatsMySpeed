@@ -403,6 +403,16 @@ func (a *App) handleMessage(hwnd uintptr, message uint32, wParam, lParam uintptr
 		a.openContextMenu()
 		return 0
 
+	case wmMeasureItem:
+		if a.tray != nil && a.tray.HandleMenuMeasureItem(lParam) {
+			return 1
+		}
+
+	case wmDrawItem:
+		if a.tray != nil && a.tray.HandleMenuDrawItem(lParam) {
+			return 1
+		}
+
 	case wmTrayCallback:
 		ev := uint32(loWord(lParam))
 		if ev == wmRButtonUp || ev == wmContextMenu {
