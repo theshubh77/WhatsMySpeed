@@ -1,12 +1,14 @@
 package ui
 
 import (
+	"fmt"
 	"image"
 	"image/png"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/WhatsMySpeed/WhatsMySpeed/assets"
@@ -797,6 +799,10 @@ func TestDashboardControlsAndConfigPersistence(t *testing.T) {
 	for _, act := range settingActions {
 		win.handleAction(act)
 	}
+	if app.hwnd != 0 || app.explorerHook != 0 || app.foregroundHook != 0 {
+		t.Fatalf("headless config test should not spawn live overlay HWND or hooks (hwnd=%v explorerHook=%v fgHook=%v)",
+			app.hwnd, app.explorerHook, app.foregroundHook)
+	}
 	loaded, err := config.LoadFrom(cfgPath)
 	if err != nil {
 		t.Fatalf("LoadFrom(%q) failed: %v", cfgPath, err)
@@ -966,26 +972,73 @@ func TestUIATrayCOMProbeDoesNotPanicOrFailInit(t *testing.T) {
 	}
 	defer procDestroyWindow.Call(hwnd)
 
-	hr, _, _ := procCoInitializeEx.Call(0, uintptr(coinitMultithreaded))
-	if hr == 0 || hr == 1 {
-		defer procCoUninitialize.Call()
+	type probeRes struct {
+		err error
+		ok  bool
 	}
-	var uia unsafe.Pointer
-	hr, _, _ = procCoCreateInstance.Call(
-		uintptr(unsafe.Pointer(&clsidCUIAutomation)),
-		0,
-		uintptr(clsctxInprocServer),
-		uintptr(unsafe.Pointer(&iidIUIAutomation)),
-		uintptr(unsafe.Pointer(&uia)),
-	)
-	if int32(hr) < 0 || uia == nil {
-		t.Fatalf("CoCreateInstance(CUIAutomation) failed: 0x%08x", uint32(hr))
-	}
-	defer uiaRelease(uia)
+	const wmTestDone = wmApp + 100
+	doneCh := make(chan probeRes, 1)
 
-	tb := rect{Left: 10, Top: 10, Right: 810, Bottom: 58}
-	if _, ok := probeSystemTrayViaUIA(uia, hwnd, tb, 96); ok {
-		t.Fatal("blank STATIC window should not report system tray elements")
+	// Run COM MTA + UIA probe on a dedicated worker thread while this HWND thread pumps
+	// messages, matching production trayProbeCache and preventing SendMessage deadlocks.
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		defer func() {
+			_, _, _ = procPostMessageW.Call(hwnd, uintptr(wmTestDone), 0, 0)
+		}()
+
+		hr, _, _ := procCoInitializeEx.Call(0, uintptr(coinitMultithreaded))
+		if hr == 0 || hr == 1 {
+			defer procCoUninitialize.Call()
+		} else if int32(hr) < 0 && uint32(hr) != 0x80010106 {
+			doneCh <- probeRes{err: fmt.Errorf("CoInitializeEx failed: 0x%08x", uint32(hr))}
+			return
+		}
+		var uia unsafe.Pointer
+		hr, _, _ = procCoCreateInstance.Call(
+			uintptr(unsafe.Pointer(&clsidCUIAutomation)),
+			0,
+			uintptr(clsctxInprocServer),
+			uintptr(unsafe.Pointer(&iidIUIAutomation)),
+			uintptr(unsafe.Pointer(&uia)),
+		)
+		if int32(hr) < 0 || uia == nil {
+			doneCh <- probeRes{err: fmt.Errorf("CoCreateInstance(CUIAutomation) failed: 0x%08x", uint32(hr))}
+			return
+		}
+		defer uiaRelease(uia)
+
+		tb := rect{Left: 10, Top: 10, Right: 810, Bottom: 58}
+		_, ok := probeSystemTrayViaUIA(uia, hwnd, tb, 96)
+		doneCh <- probeRes{ok: ok}
+	}()
+
+	stopPump := time.AfterFunc(15*time.Second, func() {
+		_, _, _ = procPostMessageW.Call(hwnd, uintptr(wmTestDone), 1, 0)
+	})
+	defer stopPump.Stop()
+
+	var m msg
+	for {
+		ret, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
+		if int32(ret) <= 0 || m.Message == wmTestDone {
+			break
+		}
+		_, _, _ = procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
+		_, _, _ = procDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
+	}
+
+	select {
+	case res := <-doneCh:
+		if res.err != nil {
+			t.Fatal(res.err)
+		}
+		if res.ok {
+			t.Fatal("blank STATIC window should not report system tray elements")
+		}
+	default:
+		t.Fatal("probeSystemTrayViaUIA timed out after 15s")
 	}
 }
 

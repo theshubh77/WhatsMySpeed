@@ -1736,6 +1736,13 @@ func (a *App) ApplyConfig(next config.Config) {
 		}
 	}
 
+	if a.hostHWND == 0 && a.hwnd == 0 {
+		if a.settings != nil {
+			a.settings.RefreshAppearance()
+		}
+		return
+	}
+
 	colors := a.currentColors
 	if colors.TextARGB == 0 {
 		colors = ColorsForTheme(a.isLightTheme)
