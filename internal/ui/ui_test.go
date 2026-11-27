@@ -5,6 +5,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"unsafe"
 
@@ -33,6 +34,30 @@ func TestWin32StructSizes(t *testing.T) {
 	}
 	if got := unsafe.Sizeof(paintStruct{}); got != 72 {
 		t.Fatalf("sizeof(paintStruct) = %d, want 72", got)
+	}
+	if got := unsafe.Sizeof(ttToolInfoW{}); got != 72 {
+		t.Fatalf("sizeof(ttToolInfoW) = %d, want 72", got)
+	}
+	if got := unsafe.Offsetof(ttToolInfoW{}.LpReserved); got != ttToolInfoV2Size {
+		t.Fatalf("ttToolInfoV2Size = %d, want %d", got, ttToolInfoV2Size)
+	}
+	if got := unsafe.Sizeof(nmHdr{}); got != 24 {
+		t.Fatalf("sizeof(nmHdr) = %d, want 24", got)
+	}
+	if got := unsafe.Sizeof(nmCustomDraw{}); got != 80 {
+		t.Fatalf("sizeof(nmCustomDraw) = %d, want 80", got)
+	}
+	if got := unsafe.Sizeof(windowPos{}); got != 40 {
+		t.Fatalf("sizeof(windowPos) = %d, want 40", got)
+	}
+	if got := unsafe.Offsetof(windowPos{}.Cx); got != 24 {
+		t.Fatalf("offsetof(windowPos.Cx) = %d, want 24", got)
+	}
+	if got := unsafe.Offsetof(windowPos{}.Cy); got != 28 {
+		t.Fatalf("offsetof(windowPos.Cy) = %d, want 28", got)
+	}
+	if got := unsafe.Offsetof(windowPos{}.Flags); got != 32 {
+		t.Fatalf("offsetof(windowPos.Flags) = %d, want 32", got)
 	}
 }
 
@@ -302,6 +327,11 @@ func TestLabelStylesAndLayoutsRenderCleanly(t *testing.T) {
 	stackedApp := NewApp(config.Default(), "", network.NewMonitor(), false)
 	stackedApp.fontFamily = ResolveTaskbarFontName()
 	stackedMetrics := stackedApp.computeMetrics(96, 1920, 48)
+
+	if stackedMetrics.fontPx < 14 || stackedMetrics.iconSize < 15 {
+		t.Fatalf("expected enlarged status bar overlay metrics (>=14 font, >=15 icon), got %d font, %d icon",
+			stackedMetrics.fontPx, stackedMetrics.iconSize)
+	}
 
 	for _, tc := range []struct {
 		name string
@@ -609,6 +639,9 @@ func TestComputeOverlayBoundsVisibility(t *testing.T) {
 }
 
 func TestChildLayeredWindowClientCoordinates(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	hInst := getModuleHandle()
 	staticCls, _ := windows.UTF16PtrFromString("STATIC")
 	title, _ := windows.UTF16PtrFromString("Test")
@@ -911,6 +944,9 @@ func TestIsShellOrFlyoutWindowThirdPartyWidgets(t *testing.T) {
 }
 
 func TestUIATrayCOMProbeDoesNotPanicOrFailInit(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	if procCoInitializeEx.Find() != nil || procCoCreateInstance.Find() != nil {
 		t.Skip("OLE32 COM APIs unavailable")
 	}
@@ -1012,6 +1048,9 @@ func TestSettingsWindowAdaptiveWorkAreaFit(t *testing.T) {
 }
 
 func TestTaskbarRegionClippingGuard(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	hInst := getModuleHandle()
 	staticCls, _ := windows.UTF16PtrFromString("STATIC")
 	title, _ := windows.UTF16PtrFromString("WMS_Rgn_Test")
@@ -1139,17 +1178,12 @@ func TestCustomPopupMenuLayoutAndRendering(t *testing.T) {
 }
 
 func TestOverlayTooltipBoundsAndRendering(t *testing.T) {
-	token, err := StartupGDIPlus()
-	if err != nil {
-		t.Fatalf("StartupGDIPlus failed: %v", err)
-	}
-	defer ShutdownGDIPlus(token)
-
 	mon := rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
 	cases := []struct {
 		name    string
 		overlay rect
 		taskbar rect
+		mon     rect
 		check   func(x, y, w, h int32) bool
 	}{
 		{
@@ -1176,53 +1210,248 @@ func TestOverlayTooltipBoundsAndRendering(t *testing.T) {
 			taskbar: rect{Left: 1848, Top: 0, Right: 1920, Bottom: 1080},
 			check:   func(x, y, w, h int32) bool { return x+w <= 1848 && y >= 0 && y+h <= 1080 },
 		},
+		{
+			name:    "negative_secondary_monitor_bottom_taskbar",
+			overlay: rect{Left: -320, Top: 1036, Right: -200, Bottom: 1076},
+			taskbar: rect{Left: -1920, Top: 1032, Right: 0, Bottom: 1080},
+			mon:     rect{Left: -1920, Top: 0, Right: 0, Bottom: 1080},
+			check:   func(x, y, w, h int32) bool { return y+h <= 1032 && x >= -1920 && x+w <= 0 },
+		},
 	}
 
+	darkTip := resolveTooltipPaletteForMode(config.ThemeDark)
+	lightTip := resolveTooltipPaletteForMode(config.ThemeLight)
+	if darkTip.bg == lightTip.bg || darkTip.textColor == lightTip.textColor || darkTip.downArrow == lightTip.downArrow {
+		t.Fatalf("expected distinct dark vs light SettingsWindow tooltip palettes: dark=%+v light=%+v", darkTip, lightTip)
+	}
+
+	darkSub, darkFlag, _ := resolveNativeTooltipThemeName(config.ThemeDark)
+	lightSub, lightFlag, _ := resolveNativeTooltipThemeName(config.ThemeLight)
+	if darkSub != "DarkMode_Explorer" || !darkFlag || lightSub != "Explorer" || lightFlag {
+		t.Fatalf("unexpected native tooltip theme names: dark=(%q,%v) light=(%q,%v)", darkSub, darkFlag, lightSub, lightFlag)
+	}
+
+	if got, want := formatNativeOverlayTooltip("24.8 MB/s", "6.2 MB/s"), "WhatsMySpeed\n↓   24.8 MB/s     ↑   6.2 MB/s"; got != want {
+		t.Fatalf("formatNativeOverlayTooltip = %q, want %q", got, want)
+	}
+
+	tipW, tipH := uint32(160), uint32(42)
+	for _, tc := range cases {
+		tcMon := tc.mon
+		if tcMon.Empty() {
+			tcMon = mon
+		}
+		x, y := computeTooltipBounds(tc.overlay, tc.taskbar, tcMon, tipW, tipH, 120)
+		if !tc.check(x, y, int32(tipW), int32(tipH)) {
+			t.Fatalf("case=%s placed out of bounds: (%d,%d) %dx%d", tc.name, x, y, tipW, tipH)
+		}
+	}
+
+	token, err := StartupGDIPlus()
+	if err != nil {
+		t.Fatalf("StartupGDIPlus failed: %v", err)
+	}
+	defer ShutdownGDIPlus(token)
+
+	// Verify real Win32 native tooltips_class32 creation, custom enlarged font & icons, activation, and cleanup.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	hostCls, _ := windows.UTF16PtrFromString("STATIC")
+	hostHwnd, _, _ := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(hostCls)), 0, uintptr(wsPopup), 0, 0, 100, 40, 0, 0, getModuleHandle(), 0)
+	if hostHwnd == 0 {
+		t.Fatal("failed to create host window for native tooltip test")
+	}
+	defer procDestroyWindow.Call(hostHwnd)
+
+	tt := &overlayTooltip{}
+	defer tt.Destroy()
+
 	fontName := ResolveTaskbarFontName()
-	for _, isLight := range []bool{false, true} {
-		pal := resolveTooltipPalette(isLight)
-		tipW, tipH, titleH, speedH, dArrowW, dTxtW, uArrowW, uTxtW := measureOverlayTooltip(
-			config.AppName, "24.8 MB/s", "6.2 MB/s", 120, fontName,
-		)
-		if tipW < 100 || tipH < 30 {
-			t.Fatalf("unexpected tooltip size %dx%d", tipW, tipH)
+	for _, mode := range []config.ThemeMode{config.ThemeDark, config.ThemeLight} {
+		tt.ShowOrUpdate(hostHwnd, rect{Left: 100, Top: 100, Right: 220, Bottom: 140}, rect{Left: 0, Top: 96, Right: 1920, Bottom: 144}, mon, 120, mode, fontName, "24.8 MB/s", "6.2 MB/s")
+		if tt.hwnd == 0 || !tt.visible || tt.hFont == 0 || tt.prevProc == 0 {
+			t.Fatalf("mode=%s native tooltip invalid state: hwnd=%v visible=%v hFont=%v prevProc=%v", mode, tt.hwnd, tt.visible, tt.hFont, tt.prevProc)
 		}
+		if lookupTooltipSubclass(tt.hwnd) != tt {
+			t.Fatalf("mode=%s tooltip subclass lookup mismatch", mode)
+		}
+		if r, ok := getWindowRect(tt.hwnd); !ok || r.Empty() {
+			t.Fatalf("mode=%s expected non-empty native tooltip window rect, got %+v (ok=%v)", mode, r, ok)
+		}
+	}
 
-		for _, tc := range cases {
-			x, y := computeTooltipBounds(tc.overlay, tc.taskbar, mon, uint32(tipW), uint32(tipH), 120)
-			if !tc.check(x, y, tipW, tipH) {
-				t.Fatalf("case=%s light=%v placed out of bounds: (%d,%d) %dx%d", tc.name, isLight, x, y, tipW, tipH)
+	// Verify WM_WINDOWPOSCHANGING subclass override locks custom dimensions instead of snapping back.
+	tt.customBoundsActive = true
+	tt.canCustomDraw = true
+	tt.lastHC = false
+	tt.hasTargetBounds = true
+	tt.targetX, tt.targetY, tt.targetW, tt.targetH = 220, 40, 290, 88
+	wp := windowPos{Hwnd: tt.hwnd, X: 10, Y: 10, Cx: 110, Cy: 24, Flags: 0}
+	if !tt.applyWindowPosOverride(uintptr(unsafe.Pointer(&wp))) {
+		t.Fatal("expected applyWindowPosOverride to rewrite non-matching WINDOWPOS")
+	}
+	if wp.X != 220 || wp.Y != 40 || wp.Cx != 290 || wp.Cy != 88 {
+		t.Fatalf("unexpected rewritten WINDOWPOS: %+v", wp)
+	}
+	tt.customBoundsActive = false
+	tt.canCustomDraw = false
+	tt.hasTargetBounds = false
+
+	// Verify monotonic hover-session width hold prevents shrinking jitter on rate spikes, then resets on Hide.
+	tt.Hide()
+	tt.ShowOrUpdate(hostHwnd, rect{Left: 100, Top: 100, Right: 220, Bottom: 140}, rect{Left: 0, Top: 96, Right: 1920, Bottom: 144}, mon, 120, config.ThemeDark, fontName, "185.4 MB/s", "6.2 MB/s")
+	peakHold := tt.holdDownW
+	if peakHold <= 0 {
+		t.Fatalf("expected non-zero holdDownW after spike, got %d", peakHold)
+	}
+	tt.ShowOrUpdate(hostHwnd, rect{Left: 100, Top: 100, Right: 220, Bottom: 140}, rect{Left: 0, Top: 96, Right: 1920, Bottom: 144}, mon, 120, config.ThemeDark, fontName, "12.4 MB/s", "6.2 MB/s")
+	if tt.holdDownW != peakHold {
+		t.Fatalf("expected holdDownW=%d to latch during active hover, got %d", peakHold, tt.holdDownW)
+	}
+	tt.Hide()
+	if tt.holdDownW != 0 || tt.holdUpW != 0 {
+		t.Fatalf("expected Hide to reset monotonic hold widths, got down=%d up=%d", tt.holdDownW, tt.holdUpW)
+	}
+	// Re-show after Hide cleanly restores visibility and width tracking.
+	tt.ShowOrUpdate(hostHwnd, rect{Left: 100, Top: 100, Right: 220, Bottom: 140}, rect{Left: 0, Top: 96, Right: 1920, Bottom: 144}, mon, 120, config.ThemeDark, fontName, "12.4 KB/s", "6.2 KB/s")
+	if !tt.visible {
+		t.Fatal("expected tooltip visible after re-show")
+	}
+
+	// Verify HRGN suppression: when custom bounds are active, WM_WINDOWPOSCHANGED clears any
+	// attached region automatically; when inactive, clearStaleWindowRgn removes it explicitly.
+	if rgn, _, _ := procCreateRectRgn.Call(0, 0, 12, 12); rgn != 0 {
+		if ok, _, _ := procSetWindowRgn.Call(tt.hwnd, rgn, 0); ok == 0 {
+			_, _, _ = procDeleteObject.Call(rgn)
+			t.Fatal("SetWindowRgn setup failed on tooltip hwnd")
+		}
+		if tt.useCustomPaint() {
+			var box rect
+			if rType, _, _ := procGetWindowRgnBox.Call(tt.hwnd, uintptr(unsafe.Pointer(&box))); rType != rgnError {
+				t.Fatalf("expected subclass WM_WINDOWPOSCHANGED to auto-clear region, got type=%d box=%+v", rType, box)
 			}
+		} else if !tt.clearStaleWindowRgn() {
+			t.Fatal("expected clearStaleWindowRgn to detect and clear non-empty window region")
 		}
+	}
+	prevCustom := tt.customBoundsActive
+	tt.customBoundsActive = false
+	if rgn, _, _ := procCreateRectRgn.Call(0, 0, 12, 12); rgn != 0 {
+		if ok, _, _ := procSetWindowRgn.Call(tt.hwnd, rgn, 0); ok == 0 {
+			_, _, _ = procDeleteObject.Call(rgn)
+			t.Fatal("SetWindowRgn fallback setup failed on tooltip hwnd")
+		}
+		if !tt.clearStaleWindowRgn() {
+			t.Fatal("expected explicit clearStaleWindowRgn to detect and clear region")
+		}
+		var box rect
+		if rType, _, _ := procGetWindowRgnBox.Call(tt.hwnd, uintptr(unsafe.Pointer(&box))); rType != rgnError {
+			t.Fatalf("expected cleared tooltip region (rgnError), got type=%d box=%+v", rType, box)
+		}
+	}
+	tt.customBoundsActive = prevCustom
 
-		buf := make([]byte, int(tipW)*int(tipH)*4)
-		var bmp uintptr
-		st, _, _ := procGdipCreateBitmapFromScan0.Call(
-			uintptr(tipW), uintptr(tipH), uintptr(tipW*4),
-			gpPixelFormat32bppPARGB, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&bmp)),
-		)
-		if st != 0 || bmp == 0 {
-			t.Fatalf("GdipCreateBitmapFromScan0(tooltip) failed: %d", st)
-		}
-		var gfx uintptr
-		st, _, _ = procGdipGetImageGraphicsContext.Call(bmp, uintptr(unsafe.Pointer(&gfx)))
-		if st != 0 || gfx == 0 {
-			_, _, _ = procGdipDisposeImage.Call(bmp)
-			t.Fatalf("GdipGetImageGraphicsContext(tooltip) failed: %d", st)
-		}
-		renderOverlayTooltip(gfx, tipW, tipH, titleH, speedH, dArrowW, dTxtW, uArrowW, uTxtW, config.AppName, "24.8 MB/s", "6.2 MB/s", pal, 120, fontName)
-		_, _, _ = procGdipDeleteGraphics.Call(gfx)
+	// Verify crisp enlarged vector icons + 15 DIP text content render non-empty foreground pixels
+	// with clean non-overflowing margins on all four sides (left, top, right, bottom).
+	tt.ensureIcons(120, 0xFFFFFFFF)
+	if tt.downIconBmp == 0 || tt.upIconBmp == 0 {
+		t.Fatal("expected native tooltip vector arrow icon bitmaps")
+	}
+	layout, layoutOk := measureTooltipLayout(120, fontName, "104.63 MB/s", "88.20 MB/s")
+	if !layoutOk || layout.reqW <= 0 || layout.reqH <= 0 {
+		t.Fatalf("measureTooltipLayout failed: ok=%v layout=%+v", layoutOk, layout)
+	}
+	cw, ch := layout.reqW, layout.reqH
+	buf := make([]byte, int(cw)*int(ch)*4)
+	var bmp uintptr
+	if st, _, _ := procGdipCreateBitmapFromScan0.Call(uintptr(cw), uintptr(ch), uintptr(cw*4), gpPixelFormat32bppPARGB, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&bmp))); st != 0 || bmp == 0 {
+		t.Fatalf("GdipCreateBitmapFromScan0(tooltip content) failed: %d", st)
+	}
+	var gfx uintptr
+	if st, _, _ := procGdipGetImageGraphicsContext.Call(bmp, uintptr(unsafe.Pointer(&gfx))); st != 0 || gfx == 0 {
 		_, _, _ = procGdipDisposeImage.Call(bmp)
+		t.Fatalf("GdipGetImageGraphicsContext(tooltip content) failed: %d", st)
+	}
+	_, _, _ = procGdipGraphicsClear.Call(gfx, 0xFF2B2B2B)
+	drawNativeTooltipContent(gfx, rect{Left: 0, Top: 0, Right: cw, Bottom: ch}, 120, fontName, "104.63 MB/s", "88.20 MB/s", 0xFFFFFFFF, tt.downIconBmp, tt.upIconBmp)
+	_, _, _ = procGdipDeleteGraphics.Call(gfx)
+	_, _, _ = procGdipDisposeImage.Call(bmp)
 
-		opaqueCount := 0
-		for i := 3; i < len(buf); i += 4 {
-			if buf[i] > 180 {
-				opaqueCount++
+	bright := 0
+	minX, minY, maxX, maxY := cw, ch, int32(-1), int32(-1)
+	for y := int32(0); y < ch; y++ {
+		for x := int32(0); x < cw; x++ {
+			i := (int(y)*int(cw) + int(x)) * 4
+			if buf[i] > 50 || buf[i+1] > 50 || buf[i+2] > 50 {
+				if buf[i] != 0x2B || buf[i+1] != 0x2B || buf[i+2] != 0x2B {
+					if x < minX {
+						minX = x
+					}
+					if x > maxX {
+						maxX = x
+					}
+					if y < minY {
+						minY = y
+					}
+					if y > maxY {
+						maxY = y
+					}
+				}
+			}
+			if buf[i] > 180 && buf[i+1] > 180 && buf[i+2] > 180 {
+				bright++
 			}
 		}
-		if opaqueCount == 0 {
-			t.Fatalf("light=%v tooltip rendered empty pixels", isLight)
-		}
+	}
+	if bright == 0 {
+		t.Fatal("drawNativeTooltipContent rendered 0 bright foreground pixels")
+	}
+	leftPad := minX
+	rightPad := cw - 1 - maxX
+	topPad := minY
+	bottomPad := ch - 1 - maxY
+	if leftPad < layout.padX-2 || rightPad < layout.padX-2 || topPad < layout.padY-2 || bottomPad < layout.padY-2 {
+		t.Fatalf("tooltip padding underflow on %dx%d: left=%d right=%d top=%d bottom=%d (padX=%d padY=%d)",
+			cw, ch, leftPad, rightPad, topPad, bottomPad, layout.padX, layout.padY)
+	}
+
+	// Verify stable bubble widths across normal rate digit fluctuations (zero resize jitter)
+	// while still expanding smoothly for multi-hundred MB/s spikes, and verify reusable DIB buffer.
+	lNarrow, ok1 := measureTooltipLayout(120, fontName, "1.11 Kbps", "0 bps")
+	lMedium, ok2 := measureTooltipLayout(120, fontName, "88.8 Kbps", "19.5 Kbps")
+	lSpike, ok3 := measureTooltipLayout(120, fontName, "985.4 MB/s", "240.8 MB/s")
+	if !ok1 || !ok2 || !ok3 || lNarrow.reqW != lMedium.reqW || lSpike.reqW <= lMedium.reqW {
+		t.Fatalf("unexpected rate-width stability: narrow=%+v medium=%+v spike=%+v", lNarrow, lMedium, lSpike)
+	}
+
+	screenDC, _, _ := procGetDC.Call(0)
+	if screenDC == 0 {
+		t.Fatal("GetDC(0) failed")
+	}
+	if !tt.ensurePaintBuffer(screenDC, cw, ch) || tt.memDC == 0 || tt.memW != cw || tt.memH != ch {
+		_, _, _ = procReleaseDC.Call(0, screenDC)
+		t.Fatal("ensurePaintBuffer failed for tooltip offscreen DIB")
+	}
+	var memGfx uintptr
+	if st, _, _ := procGdipCreateFromHDC.Call(tt.memDC, uintptr(unsafe.Pointer(&memGfx))); st != 0 || memGfx == 0 {
+		_, _, _ = procReleaseDC.Call(0, screenDC)
+		t.Fatalf("GdipCreateFromHDC(tt.memDC) failed: %d", st)
+	}
+	_, _, _ = procGdipGraphicsClear.Call(memGfx, 0xFF2B2B2B)
+	drawNativeTooltipContent(memGfx, rect{Left: 0, Top: 0, Right: cw, Bottom: ch}, 120, fontName, "8.25 Kbps", "19.5 Kbps", 0xFFFFFFFF, tt.downIconBmp, tt.upIconBmp)
+	_, _, _ = procGdipDeleteGraphics.Call(memGfx)
+	_, _, _ = procReleaseDC.Call(0, screenDC)
+	tt.releasePaintBuffer()
+	if tt.memDC != 0 || tt.memBmp != 0 {
+		t.Fatal("expected releasePaintBuffer to free tooltip offscreen resources")
+	}
+
+	oldHwnd := tt.hwnd
+	tt.Destroy()
+	if tt.hwnd != 0 || tt.prevProc != 0 || tt.hFont != 0 || tt.memDC != 0 || lookupTooltipSubclass(oldHwnd) != nil {
+		t.Fatalf("expected Destroy to clear hwnd/subclass/GDI resources: hwnd=%v prev=%v font=%v dc=%v sub=%v",
+			tt.hwnd, tt.prevProc, tt.hFont, tt.memDC, lookupTooltipSubclass(oldHwnd))
 	}
 }
 

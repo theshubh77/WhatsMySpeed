@@ -46,6 +46,11 @@ const (
 	wmContextMenu           = 0x007B
 	wmDisplayChange         = 0x007E
 	wmSetIcon               = 0x0080
+	wmNcDestroy             = 0x0082
+	wmSetFont               = 0x0030
+	wmWindowPosChanging     = 0x0046
+	wmWindowPosChanged      = 0x0047
+	wmNotify                = 0x004E
 	wmKeyDown               = 0x0100
 	wmTimer                 = 0x0113
 	wmMouseMove             = 0x0200
@@ -59,7 +64,31 @@ const (
 	wmMouseLeave            = 0x02A3
 	wmDpiChanged            = 0x02E0
 	wmDpiChangedAfterParent = 0x02E3
+	wmPrintClient           = 0x0318
+	wmThemeChanged          = 0x031A
+	wmUser                  = 0x0400
 	wmApp                   = 0x8000
+
+	nmCustomDrawCode = -12
+	cddsPrePaint     = 0x00000001
+	cdrfSkipDefault  = 0x00000004
+	tmtTextColor     = 3803
+	ttpStandard      = 1
+
+	iccWin95Classes   = 0x000000FF
+	ttsAlwaysTip      = 0x00000001
+	ttsNoPrefix       = 0x00000002
+	ttfTrack          = 0x00000020
+	ttfAbsolute       = 0x00000080
+	ttToolInfoV2Size  = 64
+	ttmTrackActivate  = wmUser + 17
+	ttmTrackPosition  = wmUser + 18
+	ttmSetTipBkColor  = wmUser + 19
+	ttmSetTipTextClr  = wmUser + 20
+	ttmSetMaxTipWidth = wmUser + 24
+	ttmSetMargin      = wmUser + 26
+	ttmAddToolW       = wmUser + 50
+	ttmUpdateTipTextW = wmUser + 57
 
 	waInactive = 0
 
@@ -107,8 +136,9 @@ const (
 	swpFrameChanged = 0x0020
 	swpShowWindow   = 0x0040
 
-	gwlStyle   = ^uintptr(15) // GWL_STYLE (-16)
-	gwlExStyle = ^uintptr(19) // GWL_EXSTYLE (-20)
+	gwlStyle    = ^uintptr(15) // GWL_STYLE (-16)
+	gwlExStyle  = ^uintptr(19) // GWL_EXSTYLE (-20)
+	gwlpWndProc = ^uintptr(3)  // GWLP_WNDPROC (-4)
 
 	gwHwndNext = 2
 
@@ -210,6 +240,8 @@ var (
 	modDwmapi   = windows.NewLazySystemDLL("dwmapi.dll")
 	modOle32    = windows.NewLazySystemDLL("ole32.dll")
 	modOleAut32 = windows.NewLazySystemDLL("oleaut32.dll")
+	modComctl32 = windows.NewLazySystemDLL("comctl32.dll")
+	modUxtheme  = windows.NewLazySystemDLL("uxtheme.dll")
 
 	procGetModuleHandleW              = modKernel32.NewProc("GetModuleHandleW")
 	procRtlMoveMemory                 = modKernel32.NewProc("RtlMoveMemory")
@@ -252,6 +284,10 @@ var (
 	procScreenToClient               = modUser32.NewProc("ScreenToClient")
 	procGetWindowLongW               = modUser32.NewProc("GetWindowLongW")
 	procSetWindowLongW               = modUser32.NewProc("SetWindowLongW")
+	procGetWindowLongPtrW            = modUser32.NewProc("GetWindowLongPtrW")
+	procSetWindowLongPtrW            = modUser32.NewProc("SetWindowLongPtrW")
+	procCallWindowProcW              = modUser32.NewProc("CallWindowProcW")
+	procWindowFromPoint              = modUser32.NewProc("WindowFromPoint")
 	procGetWindowThreadProcessId     = modUser32.NewProc("GetWindowThreadProcessId")
 	procSetWinEventHook              = modUser32.NewProc("SetWinEventHook")
 	procUnhookWinEvent               = modUser32.NewProc("UnhookWinEvent")
@@ -276,10 +312,12 @@ var (
 	procGetSysColor                  = modUser32.NewProc("GetSysColor")
 	procGetWindowRgn                 = modUser32.NewProc("GetWindowRgn")
 	procGetWindowRgnBox              = modUser32.NewProc("GetWindowRgnBox")
+	procSetWindowRgn                 = modUser32.NewProc("SetWindowRgn")
 
 	procCreateCompatibleDC = modGdi32.NewProc("CreateCompatibleDC")
 	procDeleteDC           = modGdi32.NewProc("DeleteDC")
 	procCreateDIBSection   = modGdi32.NewProc("CreateDIBSection")
+	procCreateFontIndirectW = modGdi32.NewProc("CreateFontIndirectW")
 	procSelectObject       = modGdi32.NewProc("SelectObject")
 	procDeleteObject       = modGdi32.NewProc("DeleteObject")
 	procBitBlt             = modGdi32.NewProc("BitBlt")
@@ -294,11 +332,17 @@ var (
 	procDwmGetWindowAttribute = modDwmapi.NewProc("DwmGetWindowAttribute")
 	procDwmSetWindowAttribute = modDwmapi.NewProc("DwmSetWindowAttribute")
 
-	procCoInitializeEx   = modOle32.NewProc("CoInitializeEx")
-	procCoUninitialize   = modOle32.NewProc("CoUninitialize")
-	procCoCreateInstance = modOle32.NewProc("CoCreateInstance")
-	procSysFreeString    = modOleAut32.NewProc("SysFreeString")
-	procSysStringLen     = modOleAut32.NewProc("SysStringLen")
+	procCoInitializeEx        = modOle32.NewProc("CoInitializeEx")
+	procCoUninitialize        = modOle32.NewProc("CoUninitialize")
+	procCoCreateInstance      = modOle32.NewProc("CoCreateInstance")
+	procSysFreeString         = modOleAut32.NewProc("SysFreeString")
+	procSysStringLen          = modOleAut32.NewProc("SysStringLen")
+	procInitCommonControlsEx  = modComctl32.NewProc("InitCommonControlsEx")
+	procSetWindowTheme        = modUxtheme.NewProc("SetWindowTheme")
+	procOpenThemeData         = modUxtheme.NewProc("OpenThemeData")
+	procCloseThemeData        = modUxtheme.NewProc("CloseThemeData")
+	procDrawThemeBackground   = modUxtheme.NewProc("DrawThemeBackground")
+	procGetThemeColor         = modUxtheme.NewProc("GetThemeColor")
 )
 
 type point struct {
@@ -413,6 +457,53 @@ type highContrastW struct {
 	CbSize            uint32
 	DwFlags           uint32
 	LpszDefaultScheme uintptr
+}
+
+type initCommonControlsExStruct struct {
+	DwSize uint32
+	DwICC  uint32
+}
+
+type ttToolInfoW struct {
+	CbSize     uint32
+	UFlags     uint32
+	Hwnd       uintptr
+	UID        uintptr
+	Rect       rect
+	Hinst      uintptr
+	LpszText   *uint16
+	LParam     uintptr
+	LpReserved uintptr
+}
+
+type nmHdr struct {
+	HwndFrom uintptr
+	IDFrom   uintptr
+	Code     int32
+	_        uint32
+}
+
+type nmCustomDraw struct {
+	Hdr         nmHdr
+	DwDrawStage uint32
+	_           uint32
+	Hdc         uintptr
+	Rc          rect
+	DwItemSpec  uintptr
+	UItemState  uint32
+	_           uint32
+	LItemlParam uintptr
+}
+
+type windowPos struct {
+	Hwnd            uintptr
+	HwndInsertAfter uintptr
+	X               int32
+	Y               int32
+	Cx              int32
+	Cy              int32
+	Flags           uint32
+	_               uint32
 }
 
 type menuItemInfoW struct {
@@ -618,6 +709,15 @@ func monitorWorkAreaForPoint(pt point) (rect, bool) {
 	return rect{}, false
 }
 
+func windowFromPoint(pt point) uintptr {
+	if procWindowFromPoint.Find() != nil {
+		return 0
+	}
+	packed := uintptr(uint32(pt.X)) | (uintptr(uint32(pt.Y)) << 32)
+	hwnd, _, _ := procWindowFromPoint.Call(packed)
+	return hwnd
+}
+
 func monitorBoundsForPoint(pt point) (rect, bool) {
 	packed := uintptr(uint32(pt.X)) | (uintptr(uint32(pt.Y)) << 32)
 	hMon, _, _ := procMonitorFromPoint.Call(packed, monitorDefaultToNearest)
@@ -662,6 +762,15 @@ func copyRectFromLParam(lParam uintptr) (rect, bool) {
 	var r rect
 	_, _, _ = procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&r)), lParam, unsafe.Sizeof(r))
 	return r, true
+}
+
+func copyNMCustomDrawFromLParam(lParam uintptr) (nmCustomDraw, bool) {
+	if lParam == 0 || procRtlMoveMemory.Find() != nil {
+		return nmCustomDraw{}, false
+	}
+	var nm nmCustomDraw
+	_, _, _ = procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&nm)), lParam, unsafe.Sizeof(nm))
+	return nm, true
 }
 
 func isTaskbarRegionClippingChild(taskbarHWND uintptr, localChild rect) bool {

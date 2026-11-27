@@ -258,14 +258,7 @@ func NewSettingsWindow(app *App) *SettingsWindow {
 }
 
 func (w *SettingsWindow) isWindowLightTheme() bool {
-	switch w.app.cfg.Theme {
-	case config.ThemeLight:
-		return true
-	case config.ThemeDark:
-		return false
-	default:
-		return DetectAppsLightTheme()
-	}
+	return resolveThemeIsLight(w.app.cfg.Theme)
 }
 
 // Show displays and focuses the WhatsMySpeed window.
@@ -2127,6 +2120,7 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	if tipText := themeTooltipText(w.hoveredAct); tipText != "" {
 		for _, c := range w.controls {
 			if c.action == w.hoveredAct {
+				tipPal := resolveTooltipPalette(isLight)
 				tipTextW, _ := gpMeasureString(gfx, w.fontSmall, fmtTypo, tipText)
 				tipW := int32(math.Ceil(float64(tipTextW))) + s(20)
 				tipH := s(28)
@@ -2138,11 +2132,23 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 					tipX = marginX
 				}
 				tipY := themeCapY + themeCapH + s(5)
-				gpFillRoundedRect(gfx, bBorder, tipX, tipY, tipW, tipH, s(8))
-				gpFillRoundedRect(gfx, bPill, tipX+1, tipY+1, tipW-2, tipH-2, s(7))
-				gpDrawString(gfx, w.fontSmall, fmtCenter, bText, tipText, gpRectF{
-					X: float32(tipX), Y: float32(tipY), Width: float32(tipW), Height: float32(tipH),
-				})
+				bTipBorder, _ := gpCreateSolidBrush(tipPal.border)
+				bTipBG, _ := gpCreateSolidBrush(tipPal.bg)
+				bTipTxt, _ := gpCreateSolidBrush(tipPal.textColor)
+				if bTipBorder != 0 {
+					gpFillRoundedRect(gfx, bTipBorder, tipX, tipY, tipW, tipH, s(8))
+					_, _, _ = procGdipDeleteBrush.Call(bTipBorder)
+				}
+				if bTipBG != 0 {
+					gpFillRoundedRect(gfx, bTipBG, tipX+1, tipY+1, tipW-2, tipH-2, s(7))
+					_, _, _ = procGdipDeleteBrush.Call(bTipBG)
+				}
+				if bTipTxt != 0 {
+					gpDrawString(gfx, w.fontSmall, fmtCenter, bTipTxt, tipText, gpRectF{
+						X: float32(tipX), Y: float32(tipY), Width: float32(tipW), Height: float32(tipH),
+					})
+					_, _, _ = procGdipDeleteBrush.Call(bTipTxt)
+				}
 				break
 			}
 		}

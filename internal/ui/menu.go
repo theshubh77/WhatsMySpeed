@@ -122,12 +122,7 @@ func resolveMenuPalette(cfg config.Config) menuPalette {
 		}
 	}
 
-	isLight := DetectAppsLightTheme()
-	if cfg.Theme == config.ThemeLight {
-		isLight = true
-	} else if cfg.Theme == config.ThemeDark {
-		isLight = false
-	}
+	isLight := resolveThemeIsLight(cfg.Theme)
 
 	if isLight {
 		return menuPalette{

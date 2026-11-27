@@ -377,6 +377,7 @@ func (a *App) handleMessage(hwnd uintptr, message uint32, wParam, lParam uintptr
 			globalTrayProbe.Trigger(a.taskbarHWND, a.lastTaskbarRect, a.currentDPI, 150*time.Millisecond)
 		}
 		a.syncPositionAndZOrder()
+		a.syncTooltipOnTick()
 		_, _, _ = procSetTimer.Call(a.hostHWND, timerReassertID, reassertDelayMs, 0)
 		return 0
 
@@ -432,6 +433,13 @@ func (a *App) handleMessage(hwnd uintptr, message uint32, wParam, lParam uintptr
 		a.openContextMenu()
 		return 0
 
+	case wmNotify:
+		if a.tooltip != nil {
+			if handled, res := a.tooltip.HandleNotify(lParam); handled {
+				return res
+			}
+		}
+
 	case wmTrayCallback:
 		ev := uint32(loWord(lParam))
 		if ev == wmRButtonUp || ev == wmContextMenu {
@@ -452,6 +460,7 @@ func (a *App) handleMessage(hwnd uintptr, message uint32, wParam, lParam uintptr
 			globalTrayProbe.Trigger(a.taskbarHWND, a.lastTaskbarRect, a.currentDPI, 0)
 		}
 		a.renderAndPosition()
+		a.syncTooltipOnTick()
 		if a.settings != nil {
 			a.settings.RefreshAppearance()
 		}
@@ -459,6 +468,7 @@ func (a *App) handleMessage(hwnd uintptr, message uint32, wParam, lParam uintptr
 
 	case wmPowerBroadcast:
 		if wParam == pbtApmResumeAutomatic || wParam == pbtApmResumeSuspend {
+			a.hideOverlayTooltip()
 			a.monitor.Reset()
 			a.startupSettleUntil = time.Now().Add(15 * time.Second)
 			a.refreshEnvironment(true)
@@ -686,34 +696,35 @@ func (a *App) computeMetrics(dpi uint32, taskbarWidth, taskbarHeight int32) layo
 
 	switch {
 	case a.cfg.DisplayMode != config.ModeBoth || isInline:
-		m.fontPx = scaleDPIInt(16, dpi)
-		m.iconSize = scaleDPIInt(17, dpi)
-		m.rowHeight = scaleDPIInt(26, dpi)
+		m.fontPx = scaleDPIInt(18, dpi)
+		m.iconSize = scaleDPIInt(19, dpi)
+		m.rowHeight = scaleDPIInt(29, dpi)
 		m.rowGap = 0
-		m.height = scaleDPIInt(38, dpi)
+		m.height = scaleDPIInt(41, dpi)
 		m.iconGap = scaleDPIInt(5, dpi)
 		m.unitGap = scaleDPIInt(4, dpi)
 		m.inlineGap = scaleDPIInt(12, dpi)
 		if isCompact {
-			m.fontPx = scaleDPIInt(14, dpi)
-			m.iconSize = scaleDPIInt(15, dpi)
-			m.rowHeight = scaleDPIInt(22, dpi)
-			m.height = scaleDPIInt(34, dpi)
-			m.iconGap = scaleDPIInt(3, dpi)
-			m.unitGap = scaleDPIInt(2, dpi)
+			m.fontPx = scaleDPIInt(16, dpi)
+			m.iconSize = scaleDPIInt(17, dpi)
+			m.rowHeight = scaleDPIInt(25, dpi)
+			m.height = scaleDPIInt(36, dpi)
+			m.iconGap = scaleDPIInt(4, dpi)
+			m.unitGap = scaleDPIInt(3, dpi)
 		}
 	case isCompact:
-		m.fontPx = scaleDPIInt(11, dpi)
-		m.iconSize = scaleDPIInt(12, dpi)
-		m.rowHeight = scaleDPIInt(13, dpi)
+		m.fontPx = scaleDPIInt(12, dpi)
+		m.iconSize = scaleDPIInt(14, dpi)
+		m.rowHeight = scaleDPIInt(15, dpi)
 		m.rowGap = 0
 		m.height = m.rowHeight*2 + scaleDPIInt(6, dpi)
 	default:
-		m.fontPx = scaleDPIInt(12, dpi)
-		m.iconSize = scaleDPIInt(13, dpi)
-		m.rowHeight = scaleDPIInt(15, dpi)
+		m.fontPx = scaleDPIInt(14, dpi)
+		m.iconSize = scaleDPIInt(15, dpi)
+		m.rowHeight = scaleDPIInt(17, dpi)
 		m.rowGap = scaleDPIInt(1, dpi)
-		m.height = m.rowHeight*2 + m.rowGap + scaleDPIInt(8, dpi)
+		m.iconGap = scaleDPIInt(5, dpi)
+		m.height = m.rowHeight*2 + m.rowGap + scaleDPIInt(6, dpi)
 	}
 
 	if !isVertical && taskbarHeight > 0 {
@@ -740,18 +751,18 @@ func (a *App) computeMetrics(dpi uint32, taskbarWidth, taskbarHeight int32) layo
 		if isInline && m.width > maxW {
 			m.effectiveInline = false
 			if isCompact {
-				m.fontPx = scaleDPIInt(11, dpi)
-				m.iconSize = scaleDPIInt(12, dpi)
-				m.rowHeight = scaleDPIInt(13, dpi)
+				m.fontPx = scaleDPIInt(12, dpi)
+				m.iconSize = scaleDPIInt(14, dpi)
+				m.rowHeight = scaleDPIInt(15, dpi)
 				m.height = m.rowHeight*2 + scaleDPIInt(6, dpi)
 			} else {
-				m.fontPx = scaleDPIInt(12, dpi)
-				m.iconSize = scaleDPIInt(13, dpi)
-				m.rowHeight = scaleDPIInt(15, dpi)
+				m.fontPx = scaleDPIInt(14, dpi)
+				m.iconSize = scaleDPIInt(15, dpi)
+				m.rowHeight = scaleDPIInt(17, dpi)
 				m.rowGap = scaleDPIInt(1, dpi)
-				m.height = m.rowHeight*2 + m.rowGap + scaleDPIInt(8, dpi)
+				m.height = m.rowHeight*2 + m.rowGap + scaleDPIInt(6, dpi)
 			}
-			m.iconGap = scaleDPIInt(4, dpi)
+			m.iconGap = scaleDPIInt(5, dpi)
 			m.unitGap = scaleDPIInt(3, dpi)
 			m.indicatorW, m.valueWidth, m.unitWidth = a.measureColumns(dpi, m.fontPx, m.fontPx, m.iconSize)
 			m.itemWidth = m.indicatorW + m.iconGap + m.valueWidth + m.unitGap + m.unitWidth
@@ -775,11 +786,11 @@ func (a *App) computeMetrics(dpi uint32, taskbarWidth, taskbarHeight int32) layo
 }
 
 func (a *App) computeVerticalSplitMetrics(dpi uint32, maxW int32, isCompact bool) layoutMetrics {
-	baseFont := int32(13)
+	baseFont := int32(14)
 	if a.cfg.DisplayMode != config.ModeBoth {
-		baseFont = 15
+		baseFont = 16
 	} else if isCompact {
-		baseFont = 12
+		baseFont = 13
 	}
 
 	m := layoutMetrics{
@@ -1108,7 +1119,7 @@ func (a *App) showOrUpdateTooltip() {
 	}
 	down := a.formatRate(a.currentSample.DownloadBytesPerSec).String()
 	up := a.formatRate(a.currentSample.UploadBytesPerSec).String()
-	a.tooltip.ShowOrUpdate(olRect, a.lastTaskbarRect, monRect, dpi, a.isLightTheme, a.fontFamily, down, up)
+	a.tooltip.ShowOrUpdate(a.hwnd, olRect, a.lastTaskbarRect, monRect, dpi, a.cfg.Theme, a.fontFamily, down, up)
 }
 
 func (a *App) syncTooltipOnTick() {
@@ -1121,7 +1132,14 @@ func (a *App) syncTooltipOnTick() {
 	}
 	var pt point
 	_, _, _ = procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
-	if r, ok := getWindowRect(a.hwnd); !ok || !r.Contains(pt.X, pt.Y) {
+	r, ok := getWindowRect(a.hwnd)
+	occluded := false
+	if ok && r.Contains(pt.X, pt.Y) {
+		if top := windowFromPoint(pt); top != 0 && top != a.hwnd && (a.tooltip == nil || top != a.tooltip.hwnd) && (a.attachedParent == 0 || top != a.attachedParent) {
+			occluded = true
+		}
+	}
+	if !ok || !r.Contains(pt.X, pt.Y) || occluded {
 		a.isHovered = false
 		a.trackingLeave = false
 		a.hideOverlayTooltip()

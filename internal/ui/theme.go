@@ -3,6 +3,7 @@ package ui
 import (
 	"unsafe"
 
+	"github.com/WhatsMySpeed/WhatsMySpeed/internal/config"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -154,4 +155,65 @@ func ColorsForTheme(isLight bool) ThemeColors {
 		HoverFillARGB:   0x1AFFFFFF,
 		HoverBorderARGB: 0x24FFFFFF,
 	}
+}
+
+func resolveThemeIsLight(mode config.ThemeMode) bool {
+	switch mode {
+	case config.ThemeLight:
+		return true
+	case config.ThemeDark:
+		return false
+	default:
+		return DetectAppsLightTheme()
+	}
+}
+
+type tooltipPalette struct {
+	bg         uint32
+	border     uint32
+	titleColor uint32
+	textColor  uint32
+	downArrow  uint32
+	upArrow    uint32
+}
+
+func resolveTooltipPalette(isLight bool) tooltipPalette {
+	if active, _, _ := DetectHighContrast(); active && procGetSysColor.Find() == nil {
+		winCR, _, _ := procGetSysColor.Call(colorWindow)
+		txtCR, _, _ := procGetSysColor.Call(colorWindowText)
+		hiCR, _, _ := procGetSysColor.Call(colorHighlight)
+		bg := colorrefToARGB(uint32(winCR))
+		txt := colorrefToARGB(uint32(txtCR))
+		accent := colorrefToARGB(uint32(hiCR))
+		return tooltipPalette{
+			bg:         bg,
+			border:     txt,
+			titleColor: txt,
+			textColor:  txt,
+			downArrow:  accent,
+			upArrow:    txt,
+		}
+	}
+	if isLight {
+		return tooltipPalette{
+			bg:         0xFAFFFFFF,
+			border:     0xFFCBD5E1,
+			titleColor: 0xFF475569,
+			textColor:  0xFF0F172A,
+			downArrow:  0xFF0E7490,
+			upArrow:    0xFF4D7C0F,
+		}
+	}
+	return tooltipPalette{
+		bg:         0xF7161D2C,
+		border:     0xFF334155,
+		titleColor: 0xFF94A3B8,
+		textColor:  0xFFF8FAFC,
+		downArrow:  0xFF22D3EE,
+		upArrow:    0xFFA3E635,
+	}
+}
+
+func resolveTooltipPaletteForMode(mode config.ThemeMode) tooltipPalette {
+	return resolveTooltipPalette(resolveThemeIsLight(mode))
 }
