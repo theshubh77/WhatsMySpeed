@@ -1053,72 +1053,175 @@ func TestTaskbarRegionClippingGuard(t *testing.T) {
 	}
 }
 
-func TestOwnerDrawMenuStructsAndIconRendering(t *testing.T) {
-	if got := unsafe.Sizeof(measureItemStruct{}); got != 32 {
-		t.Fatalf("sizeof(measureItemStruct) = %d, want 32", got)
-	}
-	if got := unsafe.Sizeof(drawItemStruct{}); got != 64 {
-		t.Fatalf("sizeof(drawItemStruct) = %d, want 64", got)
-	}
-	if got := unsafe.Sizeof(menuInfoW{}); got != 40 {
-		t.Fatalf("sizeof(menuInfoW) = %d, want 40", got)
-	}
-
+func TestCustomPopupMenuLayoutAndRendering(t *testing.T) {
 	token, err := StartupGDIPlus()
 	if err != nil {
 		t.Fatalf("StartupGDIPlus failed: %v", err)
 	}
 	defer ShutdownGDIPlus(token)
 
-	tray := NewTrayManager(0)
-	tray.menuFont = ResolveTaskbarFontName()
-
-	items := []ownerMenuItem{
-		{id: cmdShowBoth, text: "Show Both", isRadio: true, checked: true},
-		{text: "Label Style", hasSubmenu: true},
-		{id: cmdAutoStart, text: "Start with Windows", checked: true},
-		{isSep: true},
+	fontName := ResolveTaskbarFontName()
+	items := buildContextMenuItems(config.Default(), true)
+	if len(items) < 10 {
+		t.Fatalf("expected full context menu items, got %d", len(items))
 	}
 
-	for _, themeMode := range []config.ThemeMode{config.ThemeDark, config.ThemeLight} {
+	ml := measurePopupMenu(items, 120, fontName)
+	if ml.width < scaleDPIInt(188, 120) || ml.height <= ml.padY*2 {
+		t.Fatalf("unexpected measured menu size: %dx%d", ml.width, ml.height)
+	}
+
+	mon := rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
+	mx, my := computeMainMenuPos(point{X: 1850, Y: 1040}, ml.width, ml.height, mon, 120)
+	if mx < mon.Left || mx+ml.width > mon.Right || my < mon.Top || my+ml.height > mon.Bottom {
+		t.Fatalf("main menu pos (%d,%d) size %dx%d escaped monitor %+v", mx, my, ml.width, ml.height, mon)
+	}
+
+	// Verify submenu flips left cleanly near the right edge of the monitor.
+	parentRect := rect{Left: mx, Top: my, Right: mx + ml.width, Bottom: my + ml.height}
+	itemLocal := rect{Left: 0, Top: ml.itemTops[8], Right: ml.width, Bottom: ml.itemBottoms[8]}
+	subLayout := measurePopupMenu(items[8].children, 120, fontName)
+	sx, sy := computeSubmenuPos(parentRect, itemLocal, subLayout.width, subLayout.height, mon, ml.padY, 120)
+	if sx >= parentRect.Left || sx < mon.Left || sy < mon.Top || sy+subLayout.height > mon.Bottom {
+		t.Fatalf("expected submenu to flip left inside monitor, got (%d,%d) parent=%+v mon=%+v", sx, sy, parentRect, mon)
+	}
+
+	// Render Dark & Light palettes including a submenu item with chevron + selected pill.
+	for _, mode := range []config.ThemeMode{config.ThemeDark, config.ThemeLight} {
 		cfg := config.Default()
-		cfg.Theme = themeMode
-		tray.menuColors = resolveMenuPalette(cfg)
-		tray.menuItems = items
-		tray.measureAllMenuItems(120, tray.menuFont)
+		cfg.Theme = mode
+		pal := resolveMenuPalette(cfg)
 
-		for idx, it := range tray.menuItems {
-			if it.width == 0 || it.height == 0 {
-				t.Fatalf("menu item %d (%q) invalid measured size: %dx%d", idx, it.text, it.width, it.height)
-			}
-			w, h := int32(220), int32(it.height)
-			buf := make([]byte, int(w)*int(h)*4)
-			var bmp uintptr
-			st, _, _ := procGdipCreateBitmapFromScan0.Call(uintptr(w), uintptr(h), uintptr(w*4), gpPixelFormat32bppPARGB, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&bmp)))
-			if st != 0 || bmp == 0 {
-				t.Fatalf("GdipCreateBitmapFromScan0 failed: %d", st)
-			}
-			var gfx uintptr
-			st, _, _ = procGdipGetImageGraphicsContext.Call(bmp, uintptr(unsafe.Pointer(&gfx)))
-			if st != 0 || gfx == 0 {
-				_, _, _ = procGdipDisposeImage.Call(bmp)
-				t.Fatalf("GdipGetImageGraphicsContext failed: %d", st)
-			}
-			tray.drawOwnerMenuItem(gfx, rect{Left: 0, Top: 0, Right: w, Bottom: h}, 120, it, idx == 1, it.checked)
-			_, _, _ = procGdipDeleteGraphics.Call(gfx)
+		lvl := &popupMenuLevel{
+			items:       items,
+			layout:      ml,
+			hoveredIdx:  8,
+			hasDWMRound: true,
+		}
+		buf := make([]byte, int(ml.width)*int(ml.height)*4)
+		var bmp uintptr
+		st, _, _ := procGdipCreateBitmapFromScan0.Call(
+			uintptr(ml.width), uintptr(ml.height), uintptr(ml.width*4),
+			gpPixelFormat32bppPARGB, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&bmp)),
+		)
+		if st != 0 || bmp == 0 {
+			t.Fatalf("GdipCreateBitmapFromScan0 failed: %d", st)
+		}
+		var gfx uintptr
+		st, _, _ = procGdipGetImageGraphicsContext.Call(bmp, uintptr(unsafe.Pointer(&gfx)))
+		if st != 0 || gfx == 0 {
 			_, _, _ = procGdipDisposeImage.Call(bmp)
+			t.Fatalf("GdipGetImageGraphicsContext failed: %d", st)
+		}
+		drawPopupMenuLevel(gfx, lvl, pal, 120, fontName, -1)
+		_, _, _ = procGdipDeleteGraphics.Call(gfx)
+		_, _, _ = procGdipDisposeImage.Call(bmp)
 
-			// Verify non-uniform pixels (visible text/icon/divider) were drawn.
-			firstBGRA := [4]byte{buf[0], buf[1], buf[2], buf[3]}
-			diff := 0
-			for p := 0; p < len(buf); p += 4 {
-				if buf[p] != firstBGRA[0] || buf[p+1] != firstBGRA[1] || buf[p+2] != firstBGRA[2] {
-					diff++
+		// Check that only one crisp chevron sits in the right arrow zone on hovered submenu row 8.
+		rowTop := ml.itemTops[8] + ml.rowH/3
+		rowBot := ml.itemBottoms[8] - ml.rowH/3
+		hoverR := byte((pal.hoverBG >> 16) & 0xFF)
+		hoverG := byte((pal.hoverBG >> 8) & 0xFF)
+		hoverB := byte(pal.hoverBG & 0xFF)
+		// Rightmost interior strip of the hover pill must remain pure hover color (zero second OS arrow!).
+		rightEdgeStart := ml.width - scaleDPIInt(9, 120)
+		rightEdgeEnd := ml.width - scaleDPIInt(6, 120)
+		for y := rowTop; y < rowBot; y++ {
+			for x := rightEdgeStart; x < rightEdgeEnd; x++ {
+				off := (int(y)*int(ml.width) + int(x)) * 4
+				if buf[off] != hoverB || buf[off+1] != hoverG || buf[off+2] != hoverR {
+					t.Fatalf("theme=%s unexpected pixel at right edge (%d,%d): got BGR(%d,%d,%d) want hover(%d,%d,%d)",
+						mode, x, y, buf[off], buf[off+1], buf[off+2], hoverB, hoverG, hoverR)
 				}
 			}
-			if diff == 0 {
-				t.Fatalf("theme=%s menu item %d (%q) rendered blank", themeMode, idx, it.text)
+		}
+	}
+}
+
+func TestOverlayTooltipBoundsAndRendering(t *testing.T) {
+	token, err := StartupGDIPlus()
+	if err != nil {
+		t.Fatalf("StartupGDIPlus failed: %v", err)
+	}
+	defer ShutdownGDIPlus(token)
+
+	mon := rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
+	cases := []struct {
+		name    string
+		overlay rect
+		taskbar rect
+		check   func(x, y, w, h int32) bool
+	}{
+		{
+			name:    "bottom_taskbar",
+			overlay: rect{Left: 1620, Top: 1036, Right: 1730, Bottom: 1076},
+			taskbar: rect{Left: 0, Top: 1032, Right: 1920, Bottom: 1080},
+			check:   func(x, y, w, h int32) bool { return y+h <= 1032 && x >= 0 && x+w <= 1920 },
+		},
+		{
+			name:    "top_taskbar",
+			overlay: rect{Left: 1620, Top: 4, Right: 1730, Bottom: 44},
+			taskbar: rect{Left: 0, Top: 0, Right: 1920, Bottom: 48},
+			check:   func(x, y, w, h int32) bool { return y >= 48 && x >= 0 && x+w <= 1920 },
+		},
+		{
+			name:    "left_taskbar",
+			overlay: rect{Left: 4, Top: 860, Right: 68, Bottom: 900},
+			taskbar: rect{Left: 0, Top: 0, Right: 72, Bottom: 1080},
+			check:   func(x, y, w, h int32) bool { return x >= 72 && y >= 0 && y+h <= 1080 },
+		},
+		{
+			name:    "right_taskbar",
+			overlay: rect{Left: 1852, Top: 860, Right: 1916, Bottom: 900},
+			taskbar: rect{Left: 1848, Top: 0, Right: 1920, Bottom: 1080},
+			check:   func(x, y, w, h int32) bool { return x+w <= 1848 && y >= 0 && y+h <= 1080 },
+		},
+	}
+
+	fontName := ResolveTaskbarFontName()
+	for _, isLight := range []bool{false, true} {
+		pal := resolveTooltipPalette(isLight)
+		tipW, tipH, titleH, speedH, dArrowW, dTxtW, uArrowW, uTxtW := measureOverlayTooltip(
+			config.AppName, "24.8 MB/s", "6.2 MB/s", 120, fontName,
+		)
+		if tipW < 100 || tipH < 30 {
+			t.Fatalf("unexpected tooltip size %dx%d", tipW, tipH)
+		}
+
+		for _, tc := range cases {
+			x, y := computeTooltipBounds(tc.overlay, tc.taskbar, mon, uint32(tipW), uint32(tipH), 120)
+			if !tc.check(x, y, tipW, tipH) {
+				t.Fatalf("case=%s light=%v placed out of bounds: (%d,%d) %dx%d", tc.name, isLight, x, y, tipW, tipH)
 			}
+		}
+
+		buf := make([]byte, int(tipW)*int(tipH)*4)
+		var bmp uintptr
+		st, _, _ := procGdipCreateBitmapFromScan0.Call(
+			uintptr(tipW), uintptr(tipH), uintptr(tipW*4),
+			gpPixelFormat32bppPARGB, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&bmp)),
+		)
+		if st != 0 || bmp == 0 {
+			t.Fatalf("GdipCreateBitmapFromScan0(tooltip) failed: %d", st)
+		}
+		var gfx uintptr
+		st, _, _ = procGdipGetImageGraphicsContext.Call(bmp, uintptr(unsafe.Pointer(&gfx)))
+		if st != 0 || gfx == 0 {
+			_, _, _ = procGdipDisposeImage.Call(bmp)
+			t.Fatalf("GdipGetImageGraphicsContext(tooltip) failed: %d", st)
+		}
+		renderOverlayTooltip(gfx, tipW, tipH, titleH, speedH, dArrowW, dTxtW, uArrowW, uTxtW, config.AppName, "24.8 MB/s", "6.2 MB/s", pal, 120, fontName)
+		_, _, _ = procGdipDeleteGraphics.Call(gfx)
+		_, _, _ = procGdipDisposeImage.Call(bmp)
+
+		opaqueCount := 0
+		for i := 3; i < len(buf); i += 4 {
+			if buf[i] > 180 {
+				opaqueCount++
+			}
+		}
+		if opaqueCount == 0 {
+			t.Fatalf("light=%v tooltip rendered empty pixels", isLight)
 		}
 	}
 }
@@ -1417,5 +1520,103 @@ func TestToggleSwitchAnimationCurvesAndFrames(t *testing.T) {
 				t.Fatalf("animated canvas vertical asymmetry at (%d,%d)", x, y)
 			}
 		}
+	}
+}
+
+func TestThemeSwitcherAnimationCurvesAndFrames(t *testing.T) {
+	token, err := StartupGDIPlus()
+	if err != nil {
+		t.Fatalf("StartupGDIPlus failed: %v", err)
+	}
+	defer ShutdownGDIPlus(token)
+
+	if themeIdxFromMode(config.ThemeLight) != 0 || themeIdxFromMode(config.ThemeDark) != 1 || themeIdxFromMode(config.ThemeSystem) != 2 {
+		t.Fatalf("unexpected themeIdxFromMode mapping")
+	}
+
+	// Verify sliding capsule advances monotonically across 0 -> 1 -> 2 and maintains vertical symmetry.
+	pal := getDashboardPalette(false)
+	segW := scaleDPIInt(34, 120)
+	h := (scaleDPIInt(38, 120) - scaleDPIInt(6, 120)) &^ 1
+	areaW := segW * 3
+	buf := make([]byte, int(areaW)*int(h)*4)
+
+	prevCentroidX := -1.0
+	for _, pos := range []float64{0.0, 0.5, 1.0, 1.5, 2.0} {
+		renderThemeSlidePixels(buf, areaW, h, segW, -1, pal.pillHoverBG, pal.brandCyan, pos, 0.5)
+		for y := int32(0); y < h/2; y++ {
+			yBot := h - 1 - y
+			for x := int32(0); x < areaW; x++ {
+				i1 := (int(y)*int(areaW) + int(x)) * 4
+				i2 := (int(yBot)*int(areaW) + int(x)) * 4
+				if buf[i1] != buf[i2] || buf[i1+1] != buf[i2+1] || buf[i1+2] != buf[i2+2] || buf[i1+3] != buf[i2+3] {
+					t.Fatalf("theme slide pos=%.2f vertical asymmetry at (%d,%d)", pos, x, y)
+				}
+			}
+		}
+		sumX, count := 0.0, 0.0
+		for y := int32(0); y < h; y++ {
+			for x := int32(0); x < areaW; x++ {
+				idx := (int(y)*int(areaW) + int(x)) * 4
+				if buf[idx+3] == 255 {
+					sumX += float64(x)
+					count++
+				}
+			}
+		}
+		if count == 0 {
+			t.Fatalf("theme slide pos=%.2f rendered no solid pixels", pos)
+		}
+		cx := sumX / count
+		if cx <= prevCentroidX {
+			t.Fatalf("theme slide pos=%.2f centroid X=%.2f did not advance past %.2f", pos, cx, prevCentroidX)
+		}
+		prevCentroidX = cx
+	}
+
+	// Render SettingsWindow with an active mid-flight theme animation (Dark -> Light).
+	app := NewApp(config.Default(), "", network.NewMonitor(), false)
+	app.cfg.Theme = config.ThemeLight
+	app.fontFamily = ResolveTaskbarFontName()
+	sw := NewSettingsWindow(app)
+	sw.dpi = 120
+	sw.clientW = scaleDPIInt(baseWindowW, 120)
+	sw.clientH = scaleDPIInt(baseWindowH, 120)
+	defer sw.releaseDrawResources()
+
+	sw.ensureDrawResources(120, true)
+	sw.themeFrom = 1.0
+	sw.themeTarget = 0.0
+	sw.themePos = 0.5
+	sw.themeAnimating = true
+
+	var gfx uintptr
+	st, _, _ := procGdipGetImageGraphicsContext.Call(sw.gpBitmap, uintptr(unsafe.Pointer(&gfx)))
+	if st != 0 || gfx == 0 {
+		t.Fatalf("GdipGetImageGraphicsContext failed: %d", st)
+	}
+	sw.renderScene(gfx, sw.clientW, sw.clientH, 120, true)
+	_, _, _ = procGdipDeleteGraphics.Call(gfx)
+
+	var lightCtrl, darkCtrl uiControl
+	for _, c := range sw.controls {
+		if c.action == actThemeLight {
+			lightCtrl = c
+		} else if c.action == actThemeDark {
+			darkCtrl = c
+		}
+	}
+	if lightCtrl.bounds.Empty() || darkCtrl.bounds.Empty() {
+		t.Fatalf("expected theme controls in rendered scene")
+	}
+	// At themePos=0.5, midpoint X between Light and Dark segments must contain cyan pixels.
+	midX := (lightCtrl.bounds.Right + darkCtrl.bounds.Left) / 2
+	midY := (lightCtrl.bounds.Top + lightCtrl.bounds.Bottom) / 2
+	pix := unsafe.Slice((*byte)(sw.pBits), int(sw.dibW)*int(sw.dibH)*4)
+	off := (int(midY)*int(sw.dibW) + int(midX)) * 4
+	gotCyan := uint32(pix[off+2])<<16 | uint32(pix[off+1])<<8 | uint32(pix[off]) | 0xFF000000
+	wantCyan := getDashboardPalette(true).brandCyan
+	if gotCyan != wantCyan {
+		t.Fatalf("mid-flight theme capsule pixel at (%d,%d) = 0x%08X, want 0x%08X", midX, midY, gotCyan, wantCyan)
 	}
 }

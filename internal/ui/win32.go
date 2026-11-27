@@ -17,9 +17,10 @@ const (
 	wsMinimizeBox  = 0x00020000
 	wsMaximize     = 0x01000000
 
-	csVRedraw = 0x0001
-	csHRedraw = 0x0002
-	csDblClks = 0x0008
+	csVRedraw    = 0x0001
+	csHRedraw    = 0x0002
+	csDblClks    = 0x0008
+	csDropShadow = 0x00020000
 
 	wsExTopmost     = 0x00000008
 	wsExTransparent = 0x00000020
@@ -31,29 +32,44 @@ const (
 	wmNull                  = 0x0000
 	wmDestroy               = 0x0002
 	wmSize                  = 0x0005
+	wmActivate              = 0x0006
+	wmKillFocus             = 0x0008
 	wmPaint                 = 0x000F
 	wmClose                 = 0x0010
 	wmQueryEndSession       = 0x0011
 	wmEraseBkgnd            = 0x0014
 	wmEndSession            = 0x0016
 	wmSettingChange         = 0x001A
+	wmCancelMode            = 0x001F
 	wmSetCursor             = 0x0020
 	wmMouseActivate         = 0x0021
 	wmContextMenu           = 0x007B
 	wmDisplayChange         = 0x007E
 	wmSetIcon               = 0x0080
-	wmMeasureItem           = 0x002C
-	wmDrawItem              = 0x002B
+	wmKeyDown               = 0x0100
 	wmTimer                 = 0x0113
 	wmMouseMove             = 0x0200
+	wmLButtonDown           = 0x0201
 	wmLButtonUp             = 0x0202
 	wmLButtonDblClk         = 0x0203
+	wmRButtonDown           = 0x0204
 	wmRButtonUp             = 0x0205
+	wmMButtonDown           = 0x0207
 	wmPowerBroadcast        = 0x0218
 	wmMouseLeave            = 0x02A3
 	wmDpiChanged            = 0x02E0
 	wmDpiChangedAfterParent = 0x02E3
 	wmApp                   = 0x8000
+
+	waInactive = 0
+
+	vkReturn = 0x0D
+	vkEscape = 0x1B
+	vkSpace  = 0x20
+	vkLeft   = 0x25
+	vkUp     = 0x26
+	vkRight  = 0x27
+	vkDown   = 0x28
 
 	maNoActivate = 3
 
@@ -116,9 +132,12 @@ const (
 	abmGetState = 0x00000004
 	absAutohide = 0x00000001
 
-	dwmwaExtendedFrameBounds  = 9
-	dwmwaCloaked              = 14
-	dwmwaUseImmersiveDarkMode = 20
+	dwmwaExtendedFrameBounds    = 9
+	dwmwaCloaked                = 14
+	dwmwaUseImmersiveDarkMode   = 20
+	dwmwaWindowCornerPreference = 33
+	dwmwaBorderColor            = 34
+	dwmWcpRound                 = 2
 
 	qunsBusy                 = 2
 	qunsRunningD3DFullScreen = 3
@@ -157,15 +176,6 @@ const (
 	mftOwnerDraw  = 0x00000100
 	mftSeparator  = 0x00000800
 	mftRadioCheck = 0x00000200
-
-	odtMenu     = 1
-	odsSelected = 0x0001
-	odsGrayed   = 0x0002
-	odsDisabled = 0x0004
-	odsChecked  = 0x0008
-
-	mimBackground      = 0x00000002
-	mimApplyToSubmenus = 0x80000000
 
 	colorMenu          = 4
 	colorMenuText      = 7
@@ -260,12 +270,6 @@ var (
 	procUpdateLayeredWindow          = modUser32.NewProc("UpdateLayeredWindow")
 	procTrackMouseEvent              = modUser32.NewProc("TrackMouseEvent")
 	procGetCursorPos                 = modUser32.NewProc("GetCursorPos")
-	procCreatePopupMenu              = modUser32.NewProc("CreatePopupMenu")
-	procDestroyMenu                  = modUser32.NewProc("DestroyMenu")
-	procInsertMenuItemW              = modUser32.NewProc("InsertMenuItemW")
-	procSetMenuDefaultItem           = modUser32.NewProc("SetMenuDefaultItem")
-	procSetMenuInfo                  = modUser32.NewProc("SetMenuInfo")
-	procTrackPopupMenuEx             = modUser32.NewProc("TrackPopupMenuEx")
 	procDestroyIcon                  = modUser32.NewProc("DestroyIcon")
 	procSendMessageW                 = modUser32.NewProc("SendMessageW")
 	procSystemParametersInfoW        = modUser32.NewProc("SystemParametersInfoW")
@@ -276,13 +280,11 @@ var (
 	procCreateCompatibleDC = modGdi32.NewProc("CreateCompatibleDC")
 	procDeleteDC           = modGdi32.NewProc("DeleteDC")
 	procCreateDIBSection   = modGdi32.NewProc("CreateDIBSection")
-	procCreateSolidBrush   = modGdi32.NewProc("CreateSolidBrush")
 	procSelectObject       = modGdi32.NewProc("SelectObject")
 	procDeleteObject       = modGdi32.NewProc("DeleteObject")
 	procBitBlt             = modGdi32.NewProc("BitBlt")
 	procCreateRectRgn      = modGdi32.NewProc("CreateRectRgn")
 	procRectInRegion       = modGdi32.NewProc("RectInRegion")
-	procExcludeClipRect    = modGdi32.NewProc("ExcludeClipRect")
 
 	procShellNotifyIconW             = modShell32.NewProc("Shell_NotifyIconW")
 	procSHAppBarMessage              = modShell32.NewProc("SHAppBarMessage")
@@ -411,37 +413,6 @@ type highContrastW struct {
 	CbSize            uint32
 	DwFlags           uint32
 	LpszDefaultScheme uintptr
-}
-
-type measureItemStruct struct {
-	CtlType    uint32
-	CtlID      uint32
-	ItemID     uint32
-	ItemWidth  uint32
-	ItemHeight uint32
-	ItemData   uintptr
-}
-
-type drawItemStruct struct {
-	CtlType    uint32
-	CtlID      uint32
-	ItemID     uint32
-	ItemAction uint32
-	ItemState  uint32
-	HwndItem   uintptr
-	HDC        uintptr
-	RcItem     rect
-	ItemData   uintptr
-}
-
-type menuInfoW struct {
-	CbSize          uint32
-	FMask           uint32
-	DwStyle         uint32
-	CyMax           uint32
-	HbrBack         uintptr
-	DwContextHelpID uint32
-	DwMenuData      uintptr
 }
 
 type menuItemInfoW struct {
@@ -647,6 +618,43 @@ func monitorWorkAreaForPoint(pt point) (rect, bool) {
 	return rect{}, false
 }
 
+func monitorBoundsForPoint(pt point) (rect, bool) {
+	packed := uintptr(uint32(pt.X)) | (uintptr(uint32(pt.Y)) << 32)
+	hMon, _, _ := procMonitorFromPoint.Call(packed, monitorDefaultToNearest)
+	if hMon == 0 {
+		return rect{}, false
+	}
+	var mi monitorInfo
+	mi.CbSize = uint32(unsafe.Sizeof(mi))
+	if ok, _, _ := procGetMonitorInfoW.Call(hMon, uintptr(unsafe.Pointer(&mi))); ok != 0 && !mi.RcMonitor.Empty() {
+		return mi.RcMonitor, true
+	}
+	return rect{}, false
+}
+
+func monitorBoundsForWindow(hwnd uintptr) (rect, bool) {
+	if hwnd == 0 {
+		return rect{}, false
+	}
+	hMon, _, _ := procMonitorFromWindow.Call(hwnd, monitorDefaultToNearest)
+	if hMon == 0 {
+		return rect{}, false
+	}
+	var mi monitorInfo
+	mi.CbSize = uint32(unsafe.Sizeof(mi))
+	if ok, _, _ := procGetMonitorInfoW.Call(hMon, uintptr(unsafe.Pointer(&mi))); ok != 0 && !mi.RcMonitor.Empty() {
+		return mi.RcMonitor, true
+	}
+	return rect{}, false
+}
+
+func argbToCOLORREF(argb uint32) uint32 {
+	r := (argb >> 16) & 0xFF
+	g := (argb >> 8) & 0xFF
+	b := argb & 0xFF
+	return (b << 16) | (g << 8) | r
+}
+
 func copyRectFromLParam(lParam uintptr) (rect, bool) {
 	if lParam == 0 || procRtlMoveMemory.Find() != nil {
 		return rect{}, false
@@ -654,32 +662,6 @@ func copyRectFromLParam(lParam uintptr) (rect, bool) {
 	var r rect
 	_, _, _ = procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&r)), lParam, unsafe.Sizeof(r))
 	return r, true
-}
-
-func copyMeasureItemFromLParam(lParam uintptr) (measureItemStruct, bool) {
-	if lParam == 0 || procRtlMoveMemory.Find() != nil {
-		return measureItemStruct{}, false
-	}
-	var m measureItemStruct
-	_, _, _ = procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&m)), lParam, unsafe.Sizeof(m))
-	return m, true
-}
-
-func writeMeasureItemToLParam(lParam uintptr, m measureItemStruct) bool {
-	if lParam == 0 || procRtlMoveMemory.Find() != nil {
-		return false
-	}
-	_, _, _ = procRtlMoveMemory.Call(lParam, uintptr(unsafe.Pointer(&m)), unsafe.Sizeof(m))
-	return true
-}
-
-func copyDrawItemFromLParam(lParam uintptr) (drawItemStruct, bool) {
-	if lParam == 0 || procRtlMoveMemory.Find() != nil {
-		return drawItemStruct{}, false
-	}
-	var d drawItemStruct
-	_, _, _ = procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&d)), lParam, unsafe.Sizeof(d))
-	return d, true
 }
 
 func isTaskbarRegionClippingChild(taskbarHWND uintptr, localChild rect) bool {

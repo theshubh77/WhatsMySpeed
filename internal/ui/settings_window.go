@@ -204,6 +204,9 @@ type SettingsWindow struct {
 	switchOffHoverBmp uintptr
 	switchOffHoverBuf []byte
 	switchAnimBuf     []byte
+	themeSlideBuf     []byte
+	themeIconBlendBuf []byte
+	thIconPx          int32
 	resDPI            uint32
 	resLight          bool
 
@@ -222,13 +225,23 @@ type SettingsWindow struct {
 	switchElapsed   float64
 	switchDur       float64
 	switchAnimating bool
+	themePos        float64
+	themeFrom       float64
+	themeTarget     float64
+	themeElapsed    float64
+	themeDur        float64
+	themeAnimating  bool
 }
 
 // NewSettingsWindow creates a SettingsWindow bound to app.
 func NewSettingsWindow(app *App) *SettingsWindow {
 	initPos := 0.0
-	if app != nil && app.cfg.StartWithWindows {
-		initPos = 1.0
+	initTheme := 2.0
+	if app != nil {
+		if app.cfg.StartWithWindows {
+			initPos = 1.0
+		}
+		initTheme = themeIdxFromMode(app.cfg.Theme)
 	}
 	return &SettingsWindow{
 		app: app,
@@ -238,6 +251,9 @@ func NewSettingsWindow(app *App) *SettingsWindow {
 		switchPos:    initPos,
 		switchFrom:   initPos,
 		switchTarget: initPos,
+		themePos:     initTheme,
+		themeFrom:    initTheme,
+		themeTarget:  initTheme,
 	}
 }
 
@@ -271,6 +287,7 @@ func (w *SettingsWindow) Show(startSpeedTest bool) {
 	}
 
 	w.syncSwitchState(false)
+	w.syncThemeState(false)
 	w.applyTitleBarTheme()
 	w.ensureOnScreen()
 	if iconic, _, _ := procIsIconic.Call(w.hwnd); iconic != 0 {
@@ -301,6 +318,7 @@ func (w *SettingsWindow) RefreshAppearance() {
 		return
 	}
 	w.syncSwitchState(true)
+	w.syncThemeState(true)
 	w.applyTitleBarTheme()
 	if w.isVisible() {
 		w.invalidate()
@@ -696,7 +714,7 @@ func (w *SettingsWindow) handleMessage(message uint32, wParam, lParam uintptr) u
 			p := w.stProgress
 			running := w.stRunning
 			w.stMu.Unlock()
-			if !running && !w.switchAnimating {
+			if !running && !w.switchAnimating && !w.themeAnimating {
 				w.animGaugeFrac, w.animDisplay = targetGaugeState(p)
 				w.stopAnimTimer()
 			}
@@ -725,6 +743,7 @@ func (w *SettingsWindow) handleMessage(message uint32, wParam, lParam uintptr) u
 		w.hoveredAct = actNone
 		w.tracking = false
 		w.syncSwitchState(false)
+		w.syncThemeState(false)
 		w.stopAnimTimer()
 		w.CancelSpeedTest()
 		_, _, _ = procShowWindow.Call(w.hwnd, swHide)
@@ -890,6 +909,53 @@ func togglePosFromBool(on bool) float64 {
 	return 0.0
 }
 
+func themeIdxFromMode(mode config.ThemeMode) float64 {
+	switch mode {
+	case config.ThemeLight:
+		return 0.0
+	case config.ThemeDark:
+		return 1.0
+	default:
+		return 2.0
+	}
+}
+
+// syncThemeState updates the segmented theme switcher target from app.cfg.Theme and,
+// when animate is true on a visible window, glides smoothly from the current indicator slot.
+func (w *SettingsWindow) syncThemeState(animate bool) {
+	want := 2.0
+	if w.app != nil {
+		want = themeIdxFromMode(w.app.cfg.Theme)
+	}
+	if !animate || !w.isVisible() {
+		w.themePos = want
+		w.themeFrom = want
+		w.themeTarget = want
+		w.themeElapsed = 0
+		w.themeDur = 0
+		w.themeAnimating = false
+		return
+	}
+	if want == w.themeTarget {
+		return
+	}
+	w.themeFrom = w.themePos
+	w.themeTarget = want
+	w.themeElapsed = 0
+	dist := math.Abs(w.themeTarget - w.themeFrom)
+	dur := switchAnimDuration
+	if dist > 1.2 {
+		dur = switchAnimDuration * 1.25
+	} else if dist < 0.45 {
+		dur = switchAnimDuration * 0.45
+	} else if dist < 1.0 {
+		dur = switchAnimDuration * dist
+	}
+	w.themeDur = dur
+	w.themeAnimating = true
+	w.startAnimTimer()
+}
+
 // syncSwitchState updates the toggle switch target from app.cfg.StartWithWindows and, when
 // animate is true on a visible window, starts a smooth glide from the current knob position.
 func (w *SettingsWindow) syncSwitchState(animate bool) {
@@ -1002,11 +1068,35 @@ func (w *SettingsWindow) stepAnimation() {
 		}
 	}
 
+	themeDone := true
+	if w.themeAnimating {
+		w.themeElapsed += dt
+		dur := w.themeDur
+		if dur <= 0 {
+			dur = switchAnimDuration
+		}
+		u := w.themeElapsed / dur
+		if u >= 1.0 {
+			w.themePos = w.themeTarget
+			w.themeFrom = w.themeTarget
+			w.themeAnimating = false
+		} else {
+			eased := cubicBezierEase(u, 0.2, 0.0, 0.0, 1.0)
+			w.themePos = w.themeFrom + (w.themeTarget-w.themeFrom)*eased
+			themeDone = false
+		}
+	}
+
 	if !w.isVisible() {
 		if w.switchAnimating {
 			w.switchPos = w.switchTarget
 			w.switchFrom = w.switchTarget
 			w.switchAnimating = false
+		}
+		if w.themeAnimating {
+			w.themePos = w.themeTarget
+			w.themeFrom = w.themeTarget
+			w.themeAnimating = false
 		}
 		if !running {
 			w.animGaugeFrac = targetFrac
@@ -1021,7 +1111,7 @@ func (w *SettingsWindow) stepAnimation() {
 		w.animGaugeFrac = targetFrac
 		w.animDisplay = targetVal
 	}
-	if gaugeDone && switchDone {
+	if gaugeDone && switchDone && themeDone {
 		w.stopAnimTimer()
 	}
 	w.invalidate()
@@ -1100,6 +1190,7 @@ func (w *SettingsWindow) ensureDrawResources(dpi uint32, isLight bool) {
 		}
 
 		thPx := scaleDPIInt(18, dpi)
+		w.thIconPx = thPx
 		w.sunBmp, w.sunBuf, _ = RasterizeSVGToBitmap(assets.IconSunBold, thPx, thPx, pal.textMuted)
 		w.sunSelBmp, w.sunSelBuf, _ = RasterizeSVGToBitmap(assets.IconSunBold, thPx, thPx, pal.accentText)
 		w.moonBmp, w.moonBuf, _ = RasterizeSVGToBitmap(assets.IconMoonBold, thPx, thPx, pal.textMuted)
@@ -1498,37 +1589,103 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		action controlAction
 		bmp    uintptr
 		selBmp uintptr
+		buf    []byte
+		selBuf []byte
 	}{
-		{config.ThemeLight, actThemeLight, w.sunBmp, w.sunSelBmp},
-		{config.ThemeDark, actThemeDark, w.moonBmp, w.moonSelBmp},
-		{config.ThemeSystem, actThemeSystem, w.monBmp, w.monSelBmp},
+		{config.ThemeLight, actThemeLight, w.sunBmp, w.sunSelBmp, w.sunBuf, w.sunSelBuf},
+		{config.ThemeDark, actThemeDark, w.moonBmp, w.moonSelBmp, w.moonBuf, w.moonSelBuf},
+		{config.ThemeSystem, actThemeSystem, w.monBmp, w.monSelBmp, w.monBuf, w.monSelBuf},
 	}
+
+	activeThemePos := themeIdxFromMode(w.app.cfg.Theme)
+	themeGlide := 0.0
+	if w.themeAnimating {
+		activeThemePos = w.themePos
+		if activeThemePos < 0 {
+			activeThemePos = 0
+		} else if activeThemePos > 2 {
+			activeThemePos = 2
+		}
+		if span := math.Abs(w.themeTarget - w.themeFrom); span > 0.001 {
+			prog := math.Abs(w.themePos-w.themeFrom) / span
+			themeGlide = math.Sin(math.Pi * prog)
+		}
+	}
+
+	sh := (themeCapH - s(6)) &^ 1
+	if sh < 12 {
+		sh = 12
+	}
+	sy := themeCapY + (themeCapH-sh)/2
+	hoverIdx := -1
 	for i, ti := range themeItems {
 		sx := themeCapX + themeCapPad + int32(i)*themeSegW
-		sy := themeCapY + s(3)
-		sh := themeCapH - s(6)
 		selected := w.app.cfg.Theme == ti.mode
+		if !selected && w.hoveredAct == ti.action {
+			hoverIdx = i
+		}
 		bmp := ti.bmp
 		if selected {
 			bmp = ti.selBmp
 		}
-		ctrl := uiControl{
+		w.controls = append(w.controls, uiControl{
 			action:   ti.action,
 			bounds:   rect{Left: sx, Top: sy, Right: sx + themeSegW, Bottom: sy + sh},
 			selected: selected,
 			iconBmp:  bmp,
 			iconSize: thIconSz,
+		})
+	}
+
+	areaW := themeSegW * 3
+	needSlideBytes := int(areaW) * int(sh) * 4
+	if len(w.themeSlideBuf) != needSlideBytes {
+		w.themeSlideBuf = make([]byte, needSlideBytes)
+	}
+	renderThemeSlidePixels(w.themeSlideBuf, areaW, sh, themeSegW, hoverIdx, pal.pillHoverBG, pal.brandCyan, activeThemePos, themeGlide)
+	var slideBmp uintptr
+	if st, _, _ := procGdipCreateBitmapFromScan0.Call(
+		uintptr(areaW), uintptr(sh), uintptr(areaW*4),
+		gpPixelFormat32bppPARGB, uintptr(unsafe.Pointer(&w.themeSlideBuf[0])), uintptr(unsafe.Pointer(&slideBmp)),
+	); st == 0 && slideBmp != 0 {
+		_, _, _ = procGdipDrawImageRectI.Call(gfx, slideBmp, uintptr(themeCapX+themeCapPad), uintptr(sy), uintptr(areaW), uintptr(sh))
+		_, _, _ = procGdipDisposeImage.Call(slideBmp)
+	}
+
+	for i, ti := range themeItems {
+		sx := themeCapX + themeCapPad + int32(i)*themeSegW
+		ix := sx + (themeSegW-thIconSz)/2
+		iy := sy + (sh-thIconSz)/2
+
+		overlap := 1.0 - math.Abs(activeThemePos-float64(i))
+		if overlap < 0 {
+			overlap = 0
+		} else if overlap > 1 {
+			overlap = 1
 		}
-		w.controls = append(w.controls, ctrl)
-		if selected {
-			gpFillRoundedRect(gfx, bCyan, sx, sy, themeSegW, sh, sh/2)
-		} else if w.hoveredAct == ti.action {
-			gpFillRoundedRect(gfx, bPillHover, sx, sy, themeSegW, sh, sh/2)
+		if overlap <= 0.001 && ti.bmp != 0 {
+			_, _, _ = procGdipDrawImageRectI.Call(gfx, ti.bmp, uintptr(ix), uintptr(iy), uintptr(thIconSz), uintptr(thIconSz))
+			continue
 		}
-		if bmp != 0 {
-			ix := sx + (themeSegW-thIconSz)/2
-			iy := sy + (sh-thIconSz)/2
-			_, _, _ = procGdipDrawImageRectI.Call(gfx, bmp, uintptr(ix), uintptr(iy), uintptr(thIconSz), uintptr(thIconSz))
+		if overlap >= 0.999 && ti.selBmp != 0 {
+			_, _, _ = procGdipDrawImageRectI.Call(gfx, ti.selBmp, uintptr(ix), uintptr(iy), uintptr(thIconSz), uintptr(thIconSz))
+			continue
+		}
+		if w.thIconPx == thIconSz && len(ti.buf) > 0 && len(ti.buf) == len(ti.selBuf) {
+			if len(w.themeIconBlendBuf) != len(ti.buf) {
+				w.themeIconBlendBuf = make([]byte, len(ti.buf))
+			}
+			blendPARGBBuffers(w.themeIconBlendBuf, ti.buf, ti.selBuf, overlap)
+			var iconBmp uintptr
+			if st, _, _ := procGdipCreateBitmapFromScan0.Call(
+				uintptr(thIconSz), uintptr(thIconSz), uintptr(thIconSz*4),
+				gpPixelFormat32bppPARGB, uintptr(unsafe.Pointer(&w.themeIconBlendBuf[0])), uintptr(unsafe.Pointer(&iconBmp)),
+			); st == 0 && iconBmp != 0 {
+				_, _, _ = procGdipDrawImageRectI.Call(gfx, iconBmp, uintptr(ix), uintptr(iy), uintptr(thIconSz), uintptr(thIconSz))
+				_, _, _ = procGdipDisposeImage.Call(iconBmp)
+			}
+		} else if ti.bmp != 0 {
+			_, _, _ = procGdipDrawImageRectI.Call(gfx, ti.bmp, uintptr(ix), uintptr(iy), uintptr(thIconSz), uintptr(thIconSz))
 		}
 	}
 
@@ -2045,6 +2202,8 @@ func (w *SettingsWindow) releaseFontAndIconResources() {
 	w.dlMetricBuf, w.ulMetricBuf = nil, nil
 	w.switchOnBuf, w.switchOffBuf, w.switchOffHoverBuf = nil, nil, nil
 	w.switchAnimBuf = nil
+	w.themeSlideBuf, w.themeIconBlendBuf = nil, nil
+	w.thIconPx = 0
 	w.resDPI = 0
 }
 
@@ -2286,6 +2445,164 @@ func renderToggleSwitchBitmap(w, h, pad int32, trackARGB, knobARGB uint32, on bo
 		return 0, nil, fmt.Errorf("GdipCreateBitmapFromScan0(toggle) failed with status %d", st)
 	}
 	return gpBitmap, buf, nil
+}
+
+func blendPARGBBuffers(dst, offBuf, onBuf []byte, t float64) {
+	if t < 0 {
+		t = 0
+	} else if t > 1 {
+		t = 1
+	}
+	inv := 1.0 - t
+	for i := 0; i < len(dst); i++ {
+		dst[i] = clampToggleByte(math.Round(float64(offBuf[i])*inv + float64(onBuf[i])*t))
+	}
+}
+
+// renderThemeSlidePixels renders the 3-segment theme pill hover highlight and the
+// smoothly gliding cyan selection capsule using 8x8 supersampled SDF coverage.
+func renderThemeSlidePixels(buf []byte, areaW, h, segW int32, hoverIdx int, hoverARGB, activeARGB uint32, pos, glide float64) {
+	if areaW <= 0 || h <= 0 || segW <= 0 || len(buf) < int(areaW)*int(h)*4 {
+		return
+	}
+	if pos < 0 {
+		pos = 0
+	} else if pos > 2 {
+		pos = 2
+	}
+	if glide < 0 {
+		glide = 0
+	} else if glide > 1 {
+		glide = 1
+	}
+
+	const sub = 8
+	const subF = float64(sub)
+	const invSamples = 1.0 / float64(sub*sub)
+
+	cy := float64(h) / 2.0
+	r := cy
+	baseLeft := pos*float64(segW) + r
+	baseRight := pos*float64(segW) + float64(segW) - r
+	stretch := glide * float64(segW) * 0.08
+	aLeft := math.Max(r, baseLeft-stretch)
+	aRight := math.Min(float64(areaW)-r, baseRight+stretch)
+
+	hasHover := hoverIdx >= 0 && hoverIdx <= 2
+	hLeft := float64(int32(hoverIdx)*segW) + r
+	hRight := float64(int32(hoverIdx+1)*segW) - r
+
+	ha := float64((hoverARGB>>24)&0xFF) / 255.0
+	hr := float64((hoverARGB>>16)&0xFF) * ha
+	hg := float64((hoverARGB>>8)&0xFF) * ha
+	hb := float64(hoverARGB&0xFF) * ha
+
+	aa := float64((activeARGB>>24)&0xFF) / 255.0
+	ar := float64((activeARGB>>16)&0xFF) * aa
+	ag := float64((activeARGB>>8)&0xFF) * aa
+	ab := float64(activeARGB&0xFF) * aa
+
+	aSolidA := clampToggleByte(math.Round(aa * 255.0))
+	aSolidR := clampToggleByte(math.Round(ar))
+	aSolidG := clampToggleByte(math.Round(ag))
+	aSolidB := clampToggleByte(math.Round(ab))
+
+	rSq := r * r
+	for py := int32(0); py < h; py++ {
+		rowOff := int(py) * int(areaW) * 4
+		yc := float64(py) + 0.5
+		for px := int32(0); px < areaW; px++ {
+			xc := float64(px) + 0.5
+			off := rowOff + int(px)*4
+
+			dA := capsuleSDF(xc, yc, aLeft, aRight, cy, r)
+			if dA <= -0.75 {
+				buf[off+0] = aSolidB
+				buf[off+1] = aSolidG
+				buf[off+2] = aSolidR
+				buf[off+3] = aSolidA
+				continue
+			}
+
+			dH := 10.0
+			if hasHover {
+				dH = capsuleSDF(xc, yc, hLeft, hRight, cy, r)
+			}
+			if dA >= 0.75 && dH >= 0.75 {
+				buf[off+0] = 0
+				buf[off+1] = 0
+				buf[off+2] = 0
+				buf[off+3] = 0
+				continue
+			}
+
+			var hoverHits, activeHits int
+			for sy := 0; sy < sub; sy++ {
+				y := float64(py) + (float64(sy)+0.5)/subF
+				dy := y - cy
+				dySq := dy * dy
+				for sx := 0; sx < sub; sx++ {
+					x := float64(px) + (float64(sx)+0.5)/subF
+					cxA := x
+					if cxA < aLeft {
+						cxA = aLeft
+					} else if cxA > aRight {
+						cxA = aRight
+					}
+					dxA := x - cxA
+					if dxA*dxA+dySq <= rSq {
+						activeHits++
+					}
+					if hasHover {
+						cxH := x
+						if cxH < hLeft {
+							cxH = hLeft
+						} else if cxH > hRight {
+							cxH = hRight
+						}
+						dxH := x - cxH
+						if dxH*dxH+dySq <= rSq {
+							hoverHits++
+						}
+					}
+				}
+			}
+			if hoverHits == 0 && activeHits == 0 {
+				buf[off+0] = 0
+				buf[off+1] = 0
+				buf[off+2] = 0
+				buf[off+3] = 0
+				continue
+			}
+
+			hCov := float64(hoverHits) * invSamples
+			aCov := float64(activeHits) * invSamples
+			invA := 1.0 - aCov*aa
+
+			outA := aCov*aa + hCov*ha*invA
+			outR := aCov*ar + hCov*hr*invA
+			outG := aCov*ag + hCov*hg*invA
+			outB := aCov*ab + hCov*hb*invA
+
+			aByte := clampToggleByte(math.Round(outA * 255.0))
+			rByte := clampToggleByte(math.Round(outR))
+			gByte := clampToggleByte(math.Round(outG))
+			bByte := clampToggleByte(math.Round(outB))
+			if rByte > aByte {
+				rByte = aByte
+			}
+			if gByte > aByte {
+				gByte = aByte
+			}
+			if bByte > aByte {
+				bByte = aByte
+			}
+			buf[off+0] = bByte
+			buf[off+1] = gByte
+			buf[off+2] = rByte
+			buf[off+3] = aByte
+		}
+	}
 }
 
 func (w *SettingsWindow) releaseDrawResources() {

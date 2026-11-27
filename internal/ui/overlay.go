@@ -68,6 +68,9 @@ type App struct {
 	wmTaskbarCreated  uint32
 	tray              *TrayManager
 	settings          *SettingsWindow
+	tooltip           *overlayTooltip
+	tooltipTimerOn    bool
+	menuOpen          bool
 	currentSample     network.SpeedSample
 	currentColors     ThemeColors
 	isLightTheme      bool
@@ -209,6 +212,7 @@ func (a *App) Run() error {
 	_, _, _ = procSetTimer.Call(a.hostHWND, timerZOrderID, zOrderIntervalMs, 0)
 	defer procKillTimer.Call(a.hostHWND, timerZOrderID)
 	defer procKillTimer.Call(a.hostHWND, timerReassertID)
+	defer procKillTimer.Call(a.hostHWND, timerTooltipID)
 
 	var m msg
 	for {
@@ -354,6 +358,16 @@ func (a *App) handleMessage(hwnd uintptr, message uint32, wParam, lParam uintptr
 		case timerReassertID:
 			_, _, _ = procKillTimer.Call(a.hostHWND, timerReassertID)
 			a.syncPositionAndZOrder()
+		case timerTooltipID:
+			_, _, _ = procKillTimer.Call(a.hostHWND, timerTooltipID)
+			a.tooltipTimerOn = false
+			if a.isHovered && !a.menuOpen && a.isVisible && a.hwnd != 0 {
+				var pt point
+				_, _, _ = procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+				if r, ok := getWindowRect(a.hwnd); ok && r.Contains(pt.X, pt.Y) {
+					a.showOrUpdateTooltip()
+				}
+			}
 		}
 		return 0
 
@@ -371,9 +385,14 @@ func (a *App) handleMessage(hwnd uintptr, message uint32, wParam, lParam uintptr
 		return 0
 
 	case wmMouseMove:
-		if !a.isHovered {
+		wasHovered := a.isHovered
+		if !wasHovered {
 			a.isHovered = true
 			a.paintLayered()
+			if !a.menuOpen && a.hostHWND != 0 && (a.tooltip == nil || !a.tooltip.visible) && !a.tooltipTimerOn {
+				a.tooltipTimerOn = true
+				_, _, _ = procSetTimer.Call(a.hostHWND, timerTooltipID, tooltipHoverDelayMs, 0)
+			}
 		}
 		if !a.trackingLeave && a.hwnd != 0 {
 			tme := trackMouseEventStruct{
@@ -389,35 +408,40 @@ func (a *App) handleMessage(hwnd uintptr, message uint32, wParam, lParam uintptr
 	case wmMouseLeave:
 		a.isHovered = false
 		a.trackingLeave = false
+		a.hideOverlayTooltip()
 		a.paintLayered()
 		return 0
 
 	case wmMouseActivate:
 		return maNoActivate
 
+	case wmLButtonDown:
+		if a.tray != nil {
+			a.tray.DismissMenu()
+		}
+		a.hideOverlayTooltip()
+		return 0
+
 	case wmLButtonDblClk:
+		a.hideOverlayTooltip()
 		a.OpenSettingsWindow(false)
 		return 0
 
 	case wmRButtonUp, wmContextMenu:
+		a.hideOverlayTooltip()
 		a.openContextMenu()
 		return 0
-
-	case wmMeasureItem:
-		if a.tray != nil && a.tray.HandleMenuMeasureItem(lParam) {
-			return 1
-		}
-
-	case wmDrawItem:
-		if a.tray != nil && a.tray.HandleMenuDrawItem(lParam) {
-			return 1
-		}
 
 	case wmTrayCallback:
 		ev := uint32(loWord(lParam))
 		if ev == wmRButtonUp || ev == wmContextMenu {
+			a.hideOverlayTooltip()
 			a.openContextMenu()
 		} else if ev == wmLButtonUp || ev == wmLButtonDblClk {
+			if a.tray != nil {
+				a.tray.DismissMenu()
+			}
+			a.hideOverlayTooltip()
 			a.OpenSettingsWindow(false)
 		}
 		return 0
@@ -520,6 +544,7 @@ func (a *App) onSampleTick() {
 	}
 	a.updateTrayTooltip()
 	a.renderAndPosition()
+	a.syncTooltipOnTick()
 
 	if a.settings != nil {
 		if a.cfg.Theme == config.ThemeSystem && a.isAppLightTheme != prevAppLight {
@@ -1050,9 +1075,66 @@ func (a *App) syncPositionAndZOrder() {
 	a.positionOverlay(false)
 }
 
+func (a *App) hideOverlayTooltip() {
+	if a.tooltipTimerOn && a.hostHWND != 0 {
+		_, _, _ = procKillTimer.Call(a.hostHWND, timerTooltipID)
+		a.tooltipTimerOn = false
+	}
+	if a.tooltip != nil {
+		a.tooltip.Hide()
+	}
+}
+
+func (a *App) showOrUpdateTooltip() {
+	if a.hwnd == 0 || !a.isVisible || a.menuOpen {
+		a.hideOverlayTooltip()
+		return
+	}
+	olRect, ok := getWindowRect(a.hwnd)
+	if !ok || olRect.Empty() {
+		a.hideOverlayTooltip()
+		return
+	}
+	monRect, ok := monitorBoundsForWindow(a.hwnd)
+	if !ok {
+		monRect = rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
+	}
+	if a.tooltip == nil {
+		a.tooltip = &overlayTooltip{}
+	}
+	dpi := a.currentDPI
+	if dpi == 0 {
+		dpi = getSystemDPI()
+	}
+	down := a.formatRate(a.currentSample.DownloadBytesPerSec).String()
+	up := a.formatRate(a.currentSample.UploadBytesPerSec).String()
+	a.tooltip.ShowOrUpdate(olRect, a.lastTaskbarRect, monRect, dpi, a.isLightTheme, a.fontFamily, down, up)
+}
+
+func (a *App) syncTooltipOnTick() {
+	if a.tooltip == nil || !a.tooltip.visible {
+		return
+	}
+	if !a.isVisible || a.menuOpen || a.hwnd == 0 || !isWindowActuallyVisible(a.hwnd) {
+		a.hideOverlayTooltip()
+		return
+	}
+	var pt point
+	_, _, _ = procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+	if r, ok := getWindowRect(a.hwnd); !ok || !r.Contains(pt.X, pt.Y) {
+		a.isHovered = false
+		a.trackingLeave = false
+		a.hideOverlayTooltip()
+		a.paintLayered()
+		return
+	}
+	a.showOrUpdateTooltip()
+}
+
 func (a *App) hideOverlayWindow() {
 	a.isHovered = false
 	a.trackingLeave = false
+	a.hideOverlayTooltip()
 	if a.hwnd != 0 && (a.isVisible || isWindowActuallyVisible(a.hwnd)) {
 		_, _, _ = procShowWindow.Call(a.hwnd, swHide)
 		a.isVisible = false
@@ -1517,7 +1599,10 @@ func (a *App) openContextMenu() {
 	if a.tray == nil {
 		return
 	}
+	a.hideOverlayTooltip()
+	a.menuOpen = true
 	cmd := a.tray.ShowContextMenu(a.cfg, a.cfg.StartWithWindows)
+	a.menuOpen = false
 	if a.isHovered && a.hwnd != 0 {
 		var pt point
 		_, _, _ = procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
@@ -1641,6 +1726,7 @@ func (a *App) ApplyConfig(next config.Config) {
 	a.hasPos = false
 	a.updateTrayTooltip()
 	a.renderAndPosition()
+	a.syncTooltipOnTick()
 
 	if a.settings != nil {
 		a.settings.RefreshAppearance()
@@ -1736,5 +1822,10 @@ func (a *App) releaseRenderResources() {
 }
 
 func (a *App) cleanupResources() {
+	a.hideOverlayTooltip()
+	if a.tooltip != nil {
+		a.tooltip.Destroy()
+		a.tooltip = nil
+	}
 	a.releaseRenderResources()
 }
