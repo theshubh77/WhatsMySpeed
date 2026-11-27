@@ -91,24 +91,31 @@ jobs:
 
           $prevEAP = $ErrorActionPreference
           $ErrorActionPreference = 'Continue'
-          gh release view $tag --repo $env:GITHUB_REPOSITORY 2>$null | Out-Null
-          $viewExit = $LASTEXITCODE
+          $releasesJson = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" 2>$null
+          $apiExit = $LASTEXITCODE
           $ErrorActionPreference = $prevEAP
 
-          if ($viewExit -eq 0) {
-            gh release upload $tag $exeAsset $zipAsset $sumAsset --clobber --repo $env:GITHUB_REPOSITORY
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          } else {
-            $ghArgs = @(
-              'release', 'create', $tag,
-              $exeAsset, $zipAsset, $sumAsset,
-              '--title', "WhatsMySpeed $tag",
-              '--generate-notes',
-              '--repo', $env:GITHUB_REPOSITORY
-            )
-            if ($tag -match '-') {
-              $ghArgs += '--prerelease'
+          if ($apiExit -eq 0 -and $releasesJson) {
+            $releases = $releasesJson | ConvertFrom-Json
+            $stale = @($releases | Where-Object {
+              $_.tag_name -eq $tag -or ($_.draft -and $_.name -eq "WhatsMySpeed $tag")
+            })
+            foreach ($old in $stale) {
+              Write-Host "Removing existing release id=$($old.id) tag=$($old.tag_name) draft=$($old.draft)..."
+              gh api --method DELETE "repos/$env:GITHUB_REPOSITORY/releases/$($old.id)"
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             }
-            & gh @ghArgs
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+
+          $ghArgs = @(
+            'release', 'create', $tag,
+            $exeAsset, $zipAsset, $sumAsset,
+            '--title', "WhatsMySpeed $tag",
+            '--generate-notes',
+            '--repo', $env:GITHUB_REPOSITORY
+          )
+          if ($tag -match '-') {
+            $ghArgs += '--prerelease'
+          }
+          & gh @ghArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
