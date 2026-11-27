@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"sort"
@@ -113,12 +114,18 @@ func (o Options) withDefaults() Options {
 		// Disable HTTP/2 multiplexing so concurrent worker streams use independent
 		// parallel TCP connections instead of sharing one HTTP/2 flow-controlled socket.
 		tr := &http.Transport{
-			MaxIdleConns:        o.Streams * 2,
-			MaxIdleConnsPerHost: o.Streams * 2,
-			IdleConnTimeout:     30 * time.Second,
-			WriteBufferSize:     32 * 1024,
-			ReadBufferSize:      32 * 1024,
-			TLSNextProto:        make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+			DialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 15 * time.Second,
+			MaxIdleConns:          o.Streams * 2,
+			MaxIdleConnsPerHost:   o.Streams * 2,
+			IdleConnTimeout:       30 * time.Second,
+			WriteBufferSize:       32 * 1024,
+			ReadBufferSize:        32 * 1024,
+			TLSNextProto:          make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 		}
 		clientTimeout := 30 * time.Second
 		if maxPhase := maxDuration(o.DownloadDuration, o.UploadDuration) + 15*time.Second; maxPhase > clientTimeout {
@@ -437,6 +444,8 @@ func measureDownload(ctx context.Context, opts Options, onUpdate func(frac, mbps
 
 	var totalBytes atomic.Int64
 	var activeWorkers atomic.Int32
+	var errorExits atomic.Int32
+	var abortedEarly atomic.Bool
 	var firstErr atomic.Value
 	url := fmt.Sprintf("%s/__down?bytes=%d", opts.BaseURL, opts.DownloadBytes)
 
@@ -445,8 +454,15 @@ func measureDownload(ctx context.Context, opts Options, onUpdate func(frac, mbps
 	for i := 0; i < opts.Streams; i++ {
 		wg.Add(1)
 		go func(idx int) {
+			workerErrored := false
 			defer func() {
-				if activeWorkers.Add(-1) == 0 && totalBytes.Load() == 0 {
+				if workerErrored {
+					errorExits.Add(1)
+				}
+				if activeWorkers.Add(-1) == 0 {
+					if errorExits.Load() == int32(opts.Streams) && phaseCtx.Err() == nil {
+						abortedEarly.Store(true)
+					}
 					cancel()
 				}
 				wg.Done()
@@ -462,6 +478,7 @@ func measureDownload(ctx context.Context, opts Options, onUpdate func(frac, mbps
 				req, err := http.NewRequestWithContext(phaseCtx, http.MethodGet, url, nil)
 				if err != nil {
 					firstErr.CompareAndSwap(nil, err)
+					workerErrored = true
 					return
 				}
 				applyRequestHeaders(req, opts.BaseURL)
@@ -469,6 +486,7 @@ func measureDownload(ctx context.Context, opts Options, onUpdate func(frac, mbps
 				if err != nil {
 					if phaseCtx.Err() == nil {
 						firstErr.CompareAndSwap(nil, err)
+						workerErrored = true
 					}
 					return
 				}
@@ -482,11 +500,13 @@ func measureDownload(ctx context.Context, opts Options, onUpdate func(frac, mbps
 						continue
 					}
 					firstErr.CompareAndSwap(nil, fmt.Errorf("download HTTP %d", resp.StatusCode))
+					workerErrored = true
 					return
 				}
 				if resp.StatusCode >= 400 {
 					_ = resp.Body.Close()
 					firstErr.CompareAndSwap(nil, fmt.Errorf("download HTTP %d", resp.StatusCode))
+					workerErrored = true
 					return
 				}
 				rateRetries = 0
@@ -510,7 +530,7 @@ func measureDownload(ctx context.Context, opts Options, onUpdate func(frac, mbps
 	if ctx.Err() != nil {
 		return finalMbps, samples, ctx.Err()
 	}
-	if totalBytes.Load() == 0 {
+	if totalBytes.Load() == 0 || abortedEarly.Load() {
 		if v := firstErr.Load(); v != nil {
 			return 0, nil, v.(error)
 		}
@@ -544,6 +564,8 @@ func measureUpload(ctx context.Context, opts Options, onUpdate func(frac, mbps f
 
 	var totalBytes atomic.Int64
 	var activeWorkers atomic.Int32
+	var errorExits atomic.Int32
+	var abortedEarly atomic.Bool
 	var firstErr atomic.Value
 	url := fmt.Sprintf("%s/__up", opts.BaseURL)
 
@@ -552,8 +574,15 @@ func measureUpload(ctx context.Context, opts Options, onUpdate func(frac, mbps f
 	for i := 0; i < opts.Streams; i++ {
 		wg.Add(1)
 		go func(idx int) {
+			workerErrored := false
 			defer func() {
-				if activeWorkers.Add(-1) == 0 && totalBytes.Load() == 0 {
+				if workerErrored {
+					errorExits.Add(1)
+				}
+				if activeWorkers.Add(-1) == 0 {
+					if errorExits.Load() == int32(opts.Streams) && phaseCtx.Err() == nil {
+						abortedEarly.Store(true)
+					}
 					cancel()
 				}
 				wg.Done()
@@ -572,6 +601,7 @@ func measureUpload(ctx context.Context, opts Options, onUpdate func(frac, mbps f
 				req, err := http.NewRequestWithContext(phaseCtx, http.MethodPost, url, body)
 				if err != nil {
 					firstErr.CompareAndSwap(nil, err)
+					workerErrored = true
 					return
 				}
 				applyRequestHeaders(req, opts.BaseURL)
@@ -581,6 +611,7 @@ func measureUpload(ctx context.Context, opts Options, onUpdate func(frac, mbps f
 				if err != nil {
 					if phaseCtx.Err() == nil {
 						firstErr.CompareAndSwap(nil, err)
+						workerErrored = true
 					}
 					return
 				}
@@ -595,10 +626,12 @@ func measureUpload(ctx context.Context, opts Options, onUpdate func(frac, mbps f
 						continue
 					}
 					firstErr.CompareAndSwap(nil, fmt.Errorf("upload HTTP %d", resp.StatusCode))
+					workerErrored = true
 					return
 				}
 				if resp.StatusCode >= 400 {
 					firstErr.CompareAndSwap(nil, fmt.Errorf("upload HTTP %d", resp.StatusCode))
+					workerErrored = true
 					return
 				}
 				rateRetries = 0
@@ -612,7 +645,7 @@ func measureUpload(ctx context.Context, opts Options, onUpdate func(frac, mbps f
 	if ctx.Err() != nil {
 		return finalMbps, samples, ctx.Err()
 	}
-	if totalBytes.Load() == 0 {
+	if totalBytes.Load() == 0 || abortedEarly.Load() {
 		if v := firstErr.Load(); v != nil {
 			return 0, nil, v.(error)
 		}

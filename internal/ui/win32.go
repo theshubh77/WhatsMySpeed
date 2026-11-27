@@ -12,38 +12,59 @@ const (
 	wsChild        = 0x40000000
 	wsClipSiblings = 0x04000000
 	wsOverlapped   = 0x00000000
-	wsCaption     = 0x00C00000
-	wsSysMenu     = 0x00080000
-	wsMinimizeBox = 0x00020000
+	wsCaption      = 0x00C00000
+	wsSysMenu      = 0x00080000
+	wsMinimizeBox  = 0x00020000
+	wsMaximize     = 0x01000000
 
 	csVRedraw = 0x0001
 	csHRedraw = 0x0002
 	csDblClks = 0x0008
 
-	wsExTopmost    = 0x00000008
-	wsExToolWindow = 0x00000080
-	wsExLayered    = 0x00080000
-	wsExNoActivate = 0x08000000
+	wsExTopmost     = 0x00000008
+	wsExTransparent = 0x00000020
+	wsExToolWindow  = 0x00000080
+	wsExLayered     = 0x00080000
+	wsExLayoutRTL   = 0x00400000
+	wsExNoActivate  = 0x08000000
 
-	wmNull          = 0x0000
-	wmDestroy       = 0x0002
-	wmSize          = 0x0005
-	wmPaint         = 0x000F
-	wmClose         = 0x0010
-	wmEraseBkgnd    = 0x0014
-	wmSettingChange = 0x001A
-	wmSetCursor     = 0x0020
-	wmContextMenu   = 0x007B
-	wmDisplayChange = 0x007E
-	wmSetIcon       = 0x0080
-	wmTimer         = 0x0113
-	wmMouseMove     = 0x0200
-	wmLButtonUp     = 0x0202
-	wmLButtonDblClk = 0x0203
-	wmRButtonUp     = 0x0205
-	wmMouseLeave    = 0x02A3
-	wmDpiChanged    = 0x02E0
-	wmApp           = 0x8000
+	wmNull                  = 0x0000
+	wmDestroy               = 0x0002
+	wmSize                  = 0x0005
+	wmPaint                 = 0x000F
+	wmClose                 = 0x0010
+	wmQueryEndSession       = 0x0011
+	wmEraseBkgnd            = 0x0014
+	wmEndSession            = 0x0016
+	wmSettingChange         = 0x001A
+	wmSetCursor             = 0x0020
+	wmMouseActivate         = 0x0021
+	wmContextMenu           = 0x007B
+	wmDisplayChange         = 0x007E
+	wmSetIcon               = 0x0080
+	wmTimer                 = 0x0113
+	wmMouseMove             = 0x0200
+	wmLButtonUp             = 0x0202
+	wmLButtonDblClk         = 0x0203
+	wmRButtonUp             = 0x0205
+	wmPowerBroadcast        = 0x0218
+	wmMouseLeave            = 0x02A3
+	wmDpiChanged            = 0x02E0
+	wmDpiChangedAfterParent = 0x02E3
+	wmApp                   = 0x8000
+
+	maNoActivate = 3
+
+	pbtApmResumeSuspend   = 0x0007
+	pbtApmResumeAutomatic = 0x0012
+
+	spiGetHighContrast = 0x0042
+	hcfHighContrastOn  = 0x00000001
+	colorWindow        = 5
+	colorWindowText    = 8
+
+	nullRegion = 1
+	rgnError   = 0
 
 	wmTrayCallback    = wmApp + 1
 	wmSpeedTestUpdate = wmApp + 2
@@ -105,9 +126,14 @@ const (
 
 	eventSystemForeground     = 0x0003
 	eventSystemCaptureEnd     = 0x0009
+	eventObjectShow           = 0x8002
+	eventObjectHide           = 0x8003
 	eventObjectReorder        = 0x8004
 	eventObjectLocationChange = 0x800B
 	objidWindow               = 0
+
+	gaParent = 1
+	gaRoot   = 2
 
 	nimAdd    = 0x00000000
 	nimModify = 0x00000001
@@ -152,8 +178,11 @@ var (
 	modShell32  = windows.NewLazySystemDLL("shell32.dll")
 	modKernel32 = windows.NewLazySystemDLL("kernel32.dll")
 	modDwmapi   = windows.NewLazySystemDLL("dwmapi.dll")
+	modOle32    = windows.NewLazySystemDLL("ole32.dll")
+	modOleAut32 = windows.NewLazySystemDLL("oleaut32.dll")
 
-	procGetModuleHandleW             = modKernel32.NewProc("GetModuleHandleW")
+	procGetModuleHandleW              = modKernel32.NewProc("GetModuleHandleW")
+	procRtlMoveMemory                 = modKernel32.NewProc("RtlMoveMemory")
 	procSetProcessDpiAwarenessContext = modUser32.NewProc("SetProcessDpiAwarenessContext")
 	procSetProcessDPIAware           = modUser32.NewProc("SetProcessDPIAware")
 	procRegisterClassExW             = modUser32.NewProc("RegisterClassExW")
@@ -169,6 +198,7 @@ var (
 	procLoadCursorW                  = modUser32.NewProc("LoadCursorW")
 	procSetCursor                    = modUser32.NewProc("SetCursor")
 	procShowWindow                   = modUser32.NewProc("ShowWindow")
+	procIsWindow                     = modUser32.NewProc("IsWindow")
 	procIsWindowVisible              = modUser32.NewProc("IsWindowVisible")
 	procIsIconic                     = modUser32.NewProc("IsIconic")
 	procSetWindowPos                 = modUser32.NewProc("SetWindowPos")
@@ -188,6 +218,7 @@ var (
 	procGetWindow                    = modUser32.NewProc("GetWindow")
 	procSetParent                    = modUser32.NewProc("SetParent")
 	procGetParent                    = modUser32.NewProc("GetParent")
+	procGetAncestor                  = modUser32.NewProc("GetAncestor")
 	procScreenToClient               = modUser32.NewProc("ScreenToClient")
 	procGetWindowLongW               = modUser32.NewProc("GetWindowLongW")
 	procSetWindowLongW               = modUser32.NewProc("SetWindowLongW")
@@ -195,6 +226,7 @@ var (
 	procSetWinEventHook              = modUser32.NewProc("SetWinEventHook")
 	procUnhookWinEvent               = modUser32.NewProc("UnhookWinEvent")
 	procMonitorFromWindow            = modUser32.NewProc("MonitorFromWindow")
+	procMonitorFromPoint             = modUser32.NewProc("MonitorFromPoint")
 	procGetMonitorInfoW              = modUser32.NewProc("GetMonitorInfoW")
 	procGetDpiForWindow              = modUser32.NewProc("GetDpiForWindow")
 	procGetDpiForSystem              = modUser32.NewProc("GetDpiForSystem")
@@ -215,6 +247,10 @@ var (
 	procTrackPopupMenuEx             = modUser32.NewProc("TrackPopupMenuEx")
 	procDestroyIcon                  = modUser32.NewProc("DestroyIcon")
 	procSendMessageW                 = modUser32.NewProc("SendMessageW")
+	procSystemParametersInfoW        = modUser32.NewProc("SystemParametersInfoW")
+	procGetSysColor                  = modUser32.NewProc("GetSysColor")
+	procGetWindowRgn                 = modUser32.NewProc("GetWindowRgn")
+	procGetWindowRgnBox              = modUser32.NewProc("GetWindowRgnBox")
 
 	procCreateCompatibleDC = modGdi32.NewProc("CreateCompatibleDC")
 	procDeleteDC           = modGdi32.NewProc("DeleteDC")
@@ -222,6 +258,8 @@ var (
 	procSelectObject       = modGdi32.NewProc("SelectObject")
 	procDeleteObject       = modGdi32.NewProc("DeleteObject")
 	procBitBlt             = modGdi32.NewProc("BitBlt")
+	procCreateRectRgn      = modGdi32.NewProc("CreateRectRgn")
+	procRectInRegion       = modGdi32.NewProc("RectInRegion")
 
 	procShellNotifyIconW             = modShell32.NewProc("Shell_NotifyIconW")
 	procSHAppBarMessage              = modShell32.NewProc("SHAppBarMessage")
@@ -230,6 +268,12 @@ var (
 
 	procDwmGetWindowAttribute = modDwmapi.NewProc("DwmGetWindowAttribute")
 	procDwmSetWindowAttribute = modDwmapi.NewProc("DwmSetWindowAttribute")
+
+	procCoInitializeEx   = modOle32.NewProc("CoInitializeEx")
+	procCoUninitialize   = modOle32.NewProc("CoUninitialize")
+	procCoCreateInstance = modOle32.NewProc("CoCreateInstance")
+	procSysFreeString    = modOleAut32.NewProc("SysFreeString")
+	procSysStringLen     = modOleAut32.NewProc("SysStringLen")
 )
 
 type point struct {
@@ -338,6 +382,12 @@ type appBarData struct {
 	UEdge            uint32
 	Rc               rect
 	LParam           uintptr
+}
+
+type highContrastW struct {
+	CbSize            uint32
+	DwFlags           uint32
+	LpszDefaultScheme uintptr
 }
 
 type menuItemInfoW struct {
@@ -482,6 +532,101 @@ func isWindowActuallyVisible(hwnd uintptr) bool {
 	}
 	v, _, _ := procIsWindowVisible.Call(hwnd)
 	return v != 0
+}
+
+func isWindowHandleValid(hwnd uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+	v, _, _ := procIsWindow.Call(hwnd)
+	return v != 0
+}
+
+func isDescendantWindow(ancestor, hwnd uintptr) bool {
+	if ancestor == 0 || hwnd == 0 {
+		return false
+	}
+	if hwnd == ancestor {
+		return true
+	}
+	cur := hwnd
+	for i := 0; i < 12 && cur != 0; i++ {
+		if cur == ancestor {
+			return true
+		}
+		parent, _, _ := procGetAncestor.Call(cur, gaParent)
+		if parent == 0 {
+			parent = getParentWindow(cur)
+		}
+		cur = parent
+	}
+	return false
+}
+
+func monitorWorkAreaForWindow(hwnd uintptr) (rect, bool) {
+	if hwnd == 0 {
+		return rect{}, false
+	}
+	hMon, _, _ := procMonitorFromWindow.Call(hwnd, monitorDefaultToNearest)
+	if hMon == 0 {
+		return rect{}, false
+	}
+	var mi monitorInfo
+	mi.CbSize = uint32(unsafe.Sizeof(mi))
+	if ok, _, _ := procGetMonitorInfoW.Call(hMon, uintptr(unsafe.Pointer(&mi))); ok != 0 && !mi.RcWork.Empty() {
+		return mi.RcWork, true
+	}
+	return rect{}, false
+}
+
+func monitorWorkAreaForPoint(pt point) (rect, bool) {
+	packed := uintptr(uint32(pt.X)) | (uintptr(uint32(pt.Y)) << 32)
+	hMon, _, _ := procMonitorFromPoint.Call(packed, monitorDefaultToNearest)
+	if hMon == 0 {
+		return rect{}, false
+	}
+	var mi monitorInfo
+	mi.CbSize = uint32(unsafe.Sizeof(mi))
+	if ok, _, _ := procGetMonitorInfoW.Call(hMon, uintptr(unsafe.Pointer(&mi))); ok != 0 && !mi.RcWork.Empty() {
+		return mi.RcWork, true
+	}
+	return rect{}, false
+}
+
+func copyRectFromLParam(lParam uintptr) (rect, bool) {
+	if lParam == 0 || procRtlMoveMemory.Find() != nil {
+		return rect{}, false
+	}
+	var r rect
+	_, _, _ = procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&r)), lParam, unsafe.Sizeof(r))
+	return r, true
+}
+
+func isTaskbarRegionClippingChild(taskbarHWND uintptr, localChild rect) bool {
+	if taskbarHWND == 0 || localChild.Empty() || procGetWindowRgnBox.Find() != nil {
+		return false
+	}
+	var rgnBox rect
+	boxType, _, _ := procGetWindowRgnBox.Call(taskbarHWND, uintptr(unsafe.Pointer(&rgnBox)))
+	if boxType == rgnError {
+		return false
+	}
+	if boxType == nullRegion {
+		return true
+	}
+	if procCreateRectRgn.Find() == nil && procGetWindowRgn.Find() == nil && procRectInRegion.Find() == nil {
+		hRgn, _, _ := procCreateRectRgn.Call(0, 0, 0, 0)
+		if hRgn != 0 {
+			defer procDeleteObject.Call(hRgn)
+			rType, _, _ := procGetWindowRgn.Call(taskbarHWND, hRgn)
+			if rType != rgnError {
+				inRgn, _, _ := procRectInRegion.Call(hRgn, uintptr(unsafe.Pointer(&localChild)))
+				return inRgn == 0
+			}
+		}
+	}
+	return localChild.Right <= rgnBox.Left || localChild.Left >= rgnBox.Right ||
+		localChild.Bottom <= rgnBox.Top || localChild.Top >= rgnBox.Bottom
 }
 
 func getWindowStyle(hwnd uintptr) uint32 {
@@ -635,7 +780,17 @@ func isShellOrFlyoutWindow(className, exeName string) bool {
 		"textinputhost.exe",
 		"lockapp.exe",
 		"widgets.exe",
-		"widgetboard.exe":
+		"widgetboard.exe",
+		"wallpaper32.exe",
+		"wallpaper64.exe",
+		"webwallpaper32.exe",
+		"lively.exe",
+		"rainmeter.exe",
+		"translucenttb.exe",
+		"roundedtb.exe",
+		"f.lux.exe",
+		"twinkle tray.exe",
+		"monitorian.exe":
 		return true
 	}
 	return false

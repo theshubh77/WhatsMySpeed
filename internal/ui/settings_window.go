@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -96,10 +97,10 @@ func getDashboardPalette(isLight bool) dashboardPalette {
 			faintBorder: 0x180F172A,
 			pillBG:      0xFFEDF2F7,
 			pillHoverBG: 0xFFE2E8F0,
-			brandCyan:   0xFF0891B2,
-			brandLime:   0xFF65A30D,
-			brandMint:   0xFF0D9488,
-			heartPink:   0xFFDB2777,
+			brandCyan:   0xFF0E7490,
+			brandLime:   0xFF4D7C0F,
+			brandMint:   0xFF0F766E,
+			heartPink:   0xFFBE185D,
 			accentText:  0xFFFFFFFF,
 			textPrimary: 0xFF0F172A,
 			textMuted:   0xFF475569,
@@ -226,7 +227,7 @@ func (w *SettingsWindow) isWindowLightTheme() bool {
 	case config.ThemeDark:
 		return false
 	default:
-		return DetectTaskbarLightTheme()
+		return DetectAppsLightTheme()
 	}
 }
 
@@ -238,7 +239,18 @@ func (w *SettingsWindow) Show(startSpeedTest bool) {
 		}
 	}
 
+	if !startSpeedTest {
+		w.stMu.Lock()
+		if !w.stRunning && (w.stProgress.Phase == speedtest.PhaseCancelled || w.stProgress.Phase == speedtest.PhaseError) {
+			w.stProgress = speedtest.Progress{Phase: speedtest.PhaseIdle}
+			w.animGaugeFrac = 0
+			w.animDisplay = 0
+		}
+		w.stMu.Unlock()
+	}
+
 	w.applyTitleBarTheme()
+	w.ensureOnScreen()
 	if iconic, _, _ := procIsIconic.Call(w.hwnd); iconic != 0 {
 		_, _, _ = procShowWindow.Call(w.hwnd, swRestore)
 	} else {
@@ -340,18 +352,8 @@ func (w *SettingsWindow) create() error {
 	w.dpi = dpi
 
 	style := uintptr(wsOverlapped | wsCaption | wsSysMenu | wsMinimizeBox)
-	winW, winH := w.calcWindowSizeForClient(baseWindowW, baseWindowH, dpi, style)
-
-	screenW, _, _ := procGetSystemMetrics.Call(smCxScreen)
-	screenH, _, _ := procGetSystemMetrics.Call(smCyScreen)
-	posX := (int32(screenW) - winW) / 2
-	posY := (int32(screenH) - winH) / 2
-	if posX < 20 {
-		posX = 20
-	}
-	if posY < 20 {
-		posY = 20
-	}
+	work, _ := w.targetWorkArea()
+	winW, winH, posX, posY := w.fitAndCenterInWorkArea(work, dpi, style)
 
 	hwnd, _, callErr := procCreateWindowExW.Call(
 		0,
@@ -402,6 +404,134 @@ func (w *SettingsWindow) calcWindowSizeForClient(baseClientW, baseClientH int32,
 		_, _, _ = procAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&rc)), style, 0, 0)
 	}
 	return rc.Width(), rc.Height()
+}
+
+func (w *SettingsWindow) targetWorkArea() (rect, bool) {
+	if w.app != nil && w.app.taskbarHWND != 0 {
+		if r, ok := monitorWorkAreaForWindow(w.app.taskbarHWND); ok {
+			return r, true
+		}
+	}
+	var pt point
+	if ok, _, _ := procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt))); ok != 0 {
+		if r, mOK := monitorWorkAreaForPoint(pt); mOK {
+			return r, true
+		}
+	}
+	sw, _, _ := procGetSystemMetrics.Call(smCxScreen)
+	sh, _, _ := procGetSystemMetrics.Call(smCyScreen)
+	if sw > 0 && sh > 0 {
+		return rect{Left: 0, Top: 0, Right: int32(sw), Bottom: int32(sh)}, true
+	}
+	return rect{}, false
+}
+
+func fitClientDimensionsForWorkArea(baseClientW, baseClientH int32, work rect, dpi uint32, style uintptr, winW, winH int32) (int32, int32) {
+	if work.Empty() {
+		return winW, winH
+	}
+	margin := scaleDPIInt(16, dpi)
+	maxW := work.Width() - margin
+	maxH := work.Height() - margin
+	if maxW < 320 {
+		maxW = work.Width()
+	}
+	if maxH < 360 {
+		maxH = work.Height()
+	}
+	if winW <= maxW && winH <= maxH {
+		return winW, winH
+	}
+
+	rawCW := scaleDPIInt(baseClientW, dpi)
+	rawCH := scaleDPIInt(baseClientH, dpi)
+	chromeW := winW - rawCW
+	chromeH := winH - rawCH
+	if chromeW < 0 {
+		chromeW = 0
+	}
+	if chromeH < 0 {
+		chromeH = 0
+	}
+
+	availCW := maxW - chromeW
+	availCH := maxH - chromeH
+	if availCW <= 0 || availCH <= 0 || rawCW <= 0 || rawCH <= 0 {
+		return winW, winH
+	}
+	scaleX := float64(availCW) / float64(rawCW)
+	scaleY := float64(availCH) / float64(rawCH)
+	scale := scaleX
+	if scaleY < scale {
+		scale = scaleY
+	}
+	if scale > 1.0 {
+		scale = 1.0
+	}
+	if scale < 0.55 {
+		scale = 0.55
+	}
+	fitW := int32(math.Floor(float64(rawCW)*scale)) + chromeW
+	fitH := int32(math.Floor(float64(rawCH)*scale)) + chromeH
+	if fitW > work.Width() {
+		fitW = work.Width()
+	}
+	if fitH > work.Height() {
+		fitH = work.Height()
+	}
+	return fitW, fitH
+}
+
+func (w *SettingsWindow) fitAndCenterInWorkArea(work rect, dpi uint32, style uintptr) (winW, winH, posX, posY int32) {
+	winW, winH = w.calcWindowSizeForClient(baseWindowW, baseWindowH, dpi, style)
+	winW, winH = fitClientDimensionsForWorkArea(baseWindowW, baseWindowH, work, dpi, style, winW, winH)
+	if !work.Empty() {
+		posX = work.Left + (work.Width()-winW)/2
+		posY = work.Top + (work.Height()-winH)/2
+		if posX < work.Left {
+			posX = work.Left
+		}
+		if posY < work.Top {
+			posY = work.Top
+		}
+		return winW, winH, posX, posY
+	}
+	return winW, winH, 20, 20
+}
+
+func (w *SettingsWindow) ensureOnScreen() {
+	if w.hwnd == 0 {
+		return
+	}
+	cur, ok := getWindowRect(w.hwnd)
+	if !ok || cur.Empty() {
+		return
+	}
+	work, wOK := monitorWorkAreaForWindow(w.hwnd)
+	if !wOK || work.Empty() {
+		work, wOK = w.targetWorkArea()
+	}
+	if !wOK || work.Empty() {
+		return
+	}
+	style := uintptr(wsOverlapped | wsCaption | wsSysMenu | wsMinimizeBox)
+	winW, winH := fitClientDimensionsForWorkArea(baseWindowW, baseWindowH, work, w.dpi, style, cur.Width(), cur.Height())
+	x, y := cur.Left, cur.Top
+	if x+winW > work.Right {
+		x = work.Right - winW
+	}
+	if y+winH > work.Bottom {
+		y = work.Bottom - winH
+	}
+	if x < work.Left {
+		x = work.Left
+	}
+	if y < work.Top {
+		y = work.Top
+	}
+	if x != cur.Left || y != cur.Top || winW != cur.Width() || winH != cur.Height() {
+		_, _, _ = procSetWindowPos.Call(w.hwnd, 0, uintptr(x), uintptr(y), uintptr(winW), uintptr(winH), swpNoZOrder|swpNoActivate)
+	}
 }
 
 func (w *SettingsWindow) applyTitleBarTheme() {
@@ -455,11 +585,39 @@ func (w *SettingsWindow) handleMessage(message uint32, wParam, lParam uintptr) u
 			w.dpi = newDPI
 			style := uintptr(wsOverlapped | wsCaption | wsSysMenu | wsMinimizeBox)
 			winW, winH := w.calcWindowSizeForClient(baseWindowW, baseWindowH, newDPI, style)
-			_, _, _ = procSetWindowPos.Call(
-				w.hwnd, 0, 0, 0,
-				uintptr(winW), uintptr(winH),
-				swpNoMove|swpNoZOrder|swpNoActivate,
-			)
+			work, wOK := monitorWorkAreaForWindow(w.hwnd)
+			if wOK {
+				winW, winH = fitClientDimensionsForWorkArea(baseWindowW, baseWindowH, work, newDPI, style, winW, winH)
+			}
+			if suggested, sOK := copyRectFromLParam(lParam); sOK {
+				x, y := suggested.Left, suggested.Top
+				if wOK && !work.Empty() {
+					if x+winW > work.Right {
+						x = work.Right - winW
+					}
+					if y+winH > work.Bottom {
+						y = work.Bottom - winH
+					}
+					if x < work.Left {
+						x = work.Left
+					}
+					if y < work.Top {
+						y = work.Top
+					}
+				}
+				_, _, _ = procSetWindowPos.Call(
+					w.hwnd, 0,
+					uintptr(x), uintptr(y),
+					uintptr(winW), uintptr(winH),
+					swpNoZOrder|swpNoActivate,
+				)
+			} else {
+				_, _, _ = procSetWindowPos.Call(
+					w.hwnd, 0, 0, 0,
+					uintptr(winW), uintptr(winH),
+					swpNoMove|swpNoZOrder|swpNoActivate,
+				)
+			}
 		}
 		w.invalidate()
 		return 0
@@ -541,6 +699,8 @@ func (w *SettingsWindow) handleMessage(message uint32, wParam, lParam uintptr) u
 		return 0
 
 	case wmClose:
+		w.hoveredAct = actNone
+		w.tracking = false
 		w.stopAnimTimer()
 		w.CancelSpeedTest()
 		_, _, _ = procShowWindow.Call(w.hwnd, swHide)
@@ -889,14 +1049,49 @@ func (w *SettingsWindow) ensureDrawResources(dpi uint32, isLight bool) {
 	}
 }
 
+func layoutDPIForClient(clientW, clientH int32, fallbackDPI uint32) uint32 {
+	if clientW > 0 && clientH > 0 {
+		sx := float64(clientW) * 96.0 / float64(baseWindowW)
+		sy := float64(clientH) * 96.0 / float64(baseWindowH)
+		d := sx
+		if sy < d {
+			d = sy
+		}
+		if d < 52 {
+			d = 52
+		}
+		return uint32(math.Round(d))
+	}
+	if fallbackDPI > 0 {
+		return fallbackDPI
+	}
+	return 96
+}
+
+func friendlySpeedtestError(errMsg string) string {
+	low := strings.ToLower(errMsg)
+	switch {
+	case strings.Contains(low, "no such host"),
+		strings.Contains(low, "dial tcp"),
+		strings.Contains(low, "network is unreachable"),
+		strings.Contains(low, "connection refused"):
+		return "Check internet"
+	case strings.Contains(low, "timeout"),
+		strings.Contains(low, "deadline exceeded"):
+		return "Timed out"
+	case strings.Contains(low, "429"),
+		strings.Contains(low, "503"):
+		return "Server busy"
+	default:
+		return "Connection error"
+	}
+}
+
 func (w *SettingsWindow) paintClient(hdc uintptr) {
 	if w.clientW <= 0 || w.clientH <= 0 {
 		return
 	}
-	dpi := w.dpi
-	if dpi == 0 {
-		dpi = 96
-	}
+	dpi := layoutDPIForClient(w.clientW, w.clientH, w.dpi)
 	isLight := w.isWindowLightTheme()
 	w.ensureDrawResources(dpi, isLight)
 	if w.gpBitmap == 0 || w.memDC == 0 {
@@ -1326,9 +1521,10 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		heroUnit = "Mbps"
 	case speedtest.PhaseCancelled:
 		phaseLabel = "CANCELLED"
+		heroUnit = ""
 	case speedtest.PhaseError:
 		phaseLabel = "FAILED"
-		heroUnit = ""
+		heroUnit = friendlySpeedtestError(stProg.Error)
 	}
 
 	if gaugeFrac > 0.002 {
@@ -1358,8 +1554,8 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	})
 	if heroUnit != "" {
 		gpDrawString(gfx, w.fontGaugeUnit, fmtCenter, bMuted, heroUnit, gpRectF{
-			X: float32(gaugeCX) - float32(s(70)), Y: float32(gaugeCY) + float32(s(30)),
-			Width: float32(s(140)), Height: float32(s(22)),
+			X: float32(gaugeCX) - float32(s(92)), Y: float32(gaugeCY) + float32(s(30)),
+			Width: float32(s(184)), Height: float32(s(22)),
 		})
 	}
 
@@ -1504,10 +1700,6 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	}
 	gpFillRoundedRect(gfx, trackBrush, swX, swY, swW, swH, swH/2)
 	gpFillRoundedRect(gfx, bKnob, knobX, swY+s(3), s(20), s(20), s(10))
-	gpDrawString(gfx, w.fontSmall, fmtNear, bText, "Start with Windows", gpRectF{
-		X: float32(swX + swW + s(12)), Y: float32(footY), Width: float32(s(175)), Height: float32(footTopH),
-	})
-
 	pillFootH := s(38)
 	pillFootY := footY + (footTopH-pillFootH)/2
 
@@ -1534,6 +1726,15 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	}
 	w.controls = append(w.controls, ghCtrl)
 	drawPill(ghCtrl)
+
+	autoLabelX := swX + swW + s(12)
+	autoLabelW := ghX - s(10) - autoLabelX
+	if autoLabelW < s(120) {
+		autoLabelW = s(120)
+	}
+	gpDrawString(gfx, w.fontSmall, fmtNear, bText, "Start with Windows", gpRectF{
+		X: float32(autoLabelX), Y: float32(footY), Width: float32(autoLabelW), Height: float32(footTopH),
+	})
 
 	// Faint footer divider and centered "Made with [gradient heart] by Shubham Bhamare" line
 	divX := marginX + s(16)

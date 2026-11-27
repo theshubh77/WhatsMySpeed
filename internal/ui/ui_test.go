@@ -784,3 +784,271 @@ func TestGaugeStateAcrossPhases(t *testing.T) {
 		t.Fatalf("PhaseDownload targetGaugeState = (%v, %v), want (>0, 100)", frac, val)
 	}
 }
+
+func TestTrayBoundsFilteringAndUnion(t *testing.T) {
+	tb := rect{Left: 0, Top: 1020, Right: 1920, Bottom: 1080} // 125% DPI (60px taskbar)
+	dpi := uint32(120)
+
+	// Simulate the exact Windows 11 reboot scenario:
+	// Legacy TrayNotifyWnd only spans Clock+Battery (1745..1920), while XAML system tray
+	// icons (Chevron ^, OneDrive, ENG/IN, ControlCenterButton) start at x=1490.
+	win32NarrowTray := rect{Left: 1745, Top: 1020, Right: 1920, Bottom: 1080}
+
+	candidates := []trayCandidate{
+		// Left-side pinned app / full-width bridge must be ignored.
+		{className: "Windows.UI.Composition.DesktopWindowContentBridge", automationID: "", bounds: tb},
+		{className: "Taskbar.TaskListButtonAutomationPeer", automationID: "Appid: Chrome", bounds: rect{Left: 800, Top: 1020, Right: 850, Bottom: 1080}},
+		{className: "SystemTray.ChevronIconView", automationID: "ShowHiddenIcons", bounds: rect{Left: 1490, Top: 1025, Right: 1522, Bottom: 1075}},
+		{className: "SystemTray.IconView", automationID: "SystemTrayIcon", bounds: rect{Left: 1526, Top: 1025, Right: 1560, Bottom: 1075}},
+		{className: "SystemTray.LanguageInnerButton", automationID: "InputSwitch", bounds: rect{Left: 1564, Top: 1025, Right: 1612, Bottom: 1075}},
+		{className: "SystemTray.OmniButton", automationID: "ControlCenterButton", bounds: rect{Left: 1616, Top: 1025, Right: 1740, Bottom: 1075}},
+		// Offscreen stale element must be ignored.
+		{className: "SystemTray.NormalButton", automationID: "SystemTrayIcon", bounds: rect{Left: 1200, Top: 1025, Right: 1240, Bottom: 1075}, offscreen: true},
+	}
+
+	uxTray, uOK := computeTrayUnionFromCandidates(candidates, tb, dpi, false)
+	if !uOK {
+		t.Fatal("expected valid UIA tray union")
+	}
+	merged, mOK := unionRect(win32NarrowTray, true, uxTray, uOK)
+	if !mOK || merged.Left != 1490 || merged.Right != 1920 {
+		t.Fatalf("merged tray rect = %+v (ok=%v), want Left=1490 Right=1920", merged, mOK)
+	}
+
+	info := TaskbarInfo{
+		Valid:       true,
+		TaskbarRect: tb,
+		TrayRect:    merged,
+		MonitorRect: rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080},
+		DPI:         dpi,
+	}
+	x, y, vis := ComputeOverlayBounds(info, 110, 44)
+	if !vis || x+110 > 1490 || y < tb.Top || y+44 > tb.Bottom {
+		t.Fatalf("ComputeOverlayBounds overlapped tray or clipped: (%d,%d) vis=%v", x, y, vis)
+	}
+
+	// Simulate adding a new corner utility button (e.g., Touch Keyboard / Pen Menu / Copilot) to the tray.
+	withExtraCornerIcon := append([]trayCandidate(nil), candidates...)
+	withExtraCornerIcon = append(withExtraCornerIcon, trayCandidate{
+		className:    "Windows.UI.Xaml.Controls.ContentPresenter",
+		automationID: "TouchKeyboard",
+		bounds:       rect{Left: 1448, Top: 1025, Right: 1486, Bottom: 1075},
+	})
+	expandedTray, exOK := computeTrayUnionFromCandidates(withExtraCornerIcon, tb, dpi, false)
+	if !exOK || expandedTray.Left != 1448 {
+		t.Fatalf("expanded tray union = %+v (ok=%v), want Left=1448", expandedTray, exOK)
+	}
+	exInfo := info
+	exInfo.TrayRect = expandedTray
+	x2, _, vis2 := ComputeOverlayBounds(exInfo, 110, 44)
+	if !vis2 || x2+110 > 1448 {
+		t.Fatalf("expanded ComputeOverlayBounds overlapped new corner icon: x2=%d", x2)
+	}
+
+	// Verify full-width DesktopWindowContentBridge is rejected by Win32 classifier too.
+	if isWin32TrayDescendant("Windows.UI.Composition.DesktopWindowContentBridge", tb, tb, dpi, false) {
+		t.Fatal("full-width DesktopWindowContentBridge must not be classified as tray child")
+	}
+	if !isWin32TrayDescendant("TrayInputIndicatorWClass", rect{Left: 1564, Top: 1025, Right: 1612, Bottom: 1075}, tb, dpi, false) {
+		t.Fatal("TrayInputIndicatorWClass should be classified as tray child")
+	}
+
+	// Verify Right-to-Left (RTL) taskbar docks cleanly to the RIGHT of a left-side tray.
+	rtlTray := []trayCandidate{
+		{className: "SystemTray.ChevronIconView", automationID: "ShowHiddenIcons", bounds: rect{Left: 210, Top: 1025, Right: 244, Bottom: 1075}},
+		{className: "SystemTray.OmniButton", automationID: "ControlCenterButton", bounds: rect{Left: 4, Top: 1025, Right: 206, Bottom: 1075}},
+	}
+	rtlRect, rtlOK := computeTrayUnionFromCandidates(rtlTray, tb, dpi, true)
+	if !rtlOK || rtlRect.Right != 244 {
+		t.Fatalf("RTL tray union = %+v (ok=%v), want Right=244", rtlRect, rtlOK)
+	}
+	rtlInfo := TaskbarInfo{
+		Valid:       true,
+		TaskbarRect: tb,
+		TrayRect:    rtlRect,
+		MonitorRect: rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080},
+		DPI:         dpi,
+		RTL:         true,
+	}
+	rx, _, rvis := ComputeOverlayBounds(rtlInfo, 110, 44)
+	if !rvis || rx < rtlRect.Right {
+		t.Fatalf("RTL ComputeOverlayBounds (%d) overlapped RTL tray Right (%d)", rx, rtlRect.Right)
+	}
+}
+
+func TestThemeResolutionAndAccentLuminance(t *testing.T) {
+	u64 := func(v uint64) *uint64 { return &v }
+
+	// Standard Windows 11 Light/Dark/Custom taskbar rules.
+	if got := resolveTaskbarIsLightFromSettings(u64(0), u64(1), nil, nil); got {
+		t.Fatal("Windows Dark Taskbar + Light Apps should keep dark taskbar overlay (false)")
+	}
+	if got := resolveTaskbarIsLightFromSettings(u64(1), u64(1), nil, nil); !got {
+		t.Fatal("Windows Light Taskbar should use light taskbar overlay (true)")
+	}
+
+	// "Show accent color on Start and taskbar" (ColorPrevalence=1) overrides SystemUsesLightTheme=1!
+	darkBlueABGR := uint64(0xFFD77800) // Windows Blue #0078D7 in ABGR
+	if got := resolveTaskbarIsLightFromSettings(u64(1), u64(1), u64(1), &darkBlueABGR); got {
+		t.Fatal("Dark blue accent taskbar must switch overlay to white text (isLight=false)")
+	}
+	brightMintABGR := uint64(0xFF99F0A0) // Bright pastel light green
+	if got := resolveTaskbarIsLightFromSettings(u64(0), u64(0), u64(1), &brightMintABGR); !got {
+		t.Fatal("Bright pastel accent taskbar must switch overlay to dark text (isLight=true)")
+	}
+
+	if got := colorrefToARGB(0x00112233); got != 0xFF332211 {
+		t.Fatalf("colorrefToARGB(0x00112233) = 0x%08x, want 0xFF332211", got)
+	}
+}
+
+func TestIsShellOrFlyoutWindowThirdPartyWidgets(t *testing.T) {
+	for _, exe := range []string{"wallpaper32.exe", "Lively.exe", "Rainmeter.exe", "TranslucentTB.exe", "RoundedTB.exe"} {
+		if !isShellOrFlyoutWindow("GenericFullscreenWidget", exe) {
+			t.Fatalf("expected third-party desktop/taskbar utility %q to be excluded from fullscreen blocking", exe)
+		}
+	}
+}
+
+func TestUIATrayCOMProbeDoesNotPanicOrFailInit(t *testing.T) {
+	if procCoInitializeEx.Find() != nil || procCoCreateInstance.Find() != nil {
+		t.Skip("OLE32 COM APIs unavailable")
+	}
+	hInst := getModuleHandle()
+	cls, _ := windows.UTF16PtrFromString("STATIC")
+	title, _ := windows.UTF16PtrFromString("WMS_UIA_Test")
+	hwnd, _, _ := procCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(cls)),
+		uintptr(unsafe.Pointer(title)),
+		uintptr(wsPopup),
+		10, 10, 800, 48,
+		0, 0, hInst, 0,
+	)
+	if hwnd == 0 {
+		t.Skip("headless window creation unavailable")
+	}
+	defer procDestroyWindow.Call(hwnd)
+
+	hr, _, _ := procCoInitializeEx.Call(0, uintptr(coinitMultithreaded))
+	if hr == 0 || hr == 1 {
+		defer procCoUninitialize.Call()
+	}
+	var uia unsafe.Pointer
+	hr, _, _ = procCoCreateInstance.Call(
+		uintptr(unsafe.Pointer(&clsidCUIAutomation)),
+		0,
+		uintptr(clsctxInprocServer),
+		uintptr(unsafe.Pointer(&iidIUIAutomation)),
+		uintptr(unsafe.Pointer(&uia)),
+	)
+	if int32(hr) < 0 || uia == nil {
+		t.Fatalf("CoCreateInstance(CUIAutomation) failed: 0x%08x", uint32(hr))
+	}
+	defer uiaRelease(uia)
+
+	tb := rect{Left: 10, Top: 10, Right: 810, Bottom: 58}
+	if _, ok := probeSystemTrayViaUIA(uia, hwnd, tb, 96); ok {
+		t.Fatal("blank STATIC window should not report system tray elements")
+	}
+}
+
+func TestSettingsWindowAdaptiveWorkAreaFit(t *testing.T) {
+	token, err := StartupGDIPlus()
+	if err != nil {
+		t.Fatalf("StartupGDIPlus failed: %v", err)
+	}
+	defer ShutdownGDIPlus(token)
+
+	// Laptop 1920x1080 at 150% DPI (144 DPI): unscaled window would exceed 1008px work area.
+	style := uintptr(wsOverlapped | wsCaption | wsSysMenu | wsMinimizeBox)
+	sw := NewSettingsWindow(NewApp(config.Default(), "", network.NewMonitor(), false))
+	work150 := rect{Left: 0, Top: 0, Right: 1920, Bottom: 1008}
+	winW, winH, posX, posY := sw.fitAndCenterInWorkArea(work150, 144, style)
+	if winW > work150.Width() || winH > work150.Height() || posX < 0 || posY < 0 {
+		t.Fatalf("150%% DPI window exceeded work area: size=(%d,%d) pos=(%d,%d)", winW, winH, posX, posY)
+	}
+
+	// Laptop 1366x768 at 100% DPI (96 DPI): must shrink proportionally inside 1366x720 work area.
+	work768 := rect{Left: 0, Top: 0, Right: 1366, Bottom: 720}
+	w768, h768, x768, y768 := sw.fitAndCenterInWorkArea(work768, 96, style)
+	if w768 > work768.Width() || h768 > work768.Height() || x768 < 0 || y768 < 0 {
+		t.Fatalf("1366x768 window exceeded work area: size=(%d,%d) pos=(%d,%d)", w768, h768, x768, y768)
+	}
+
+	// Verify scaled scene still keeps every interactive control inside bounds and hit-testable.
+	sw.app.fontFamily = ResolveTaskbarFontName()
+	sw.clientW = w768 - 16
+	sw.clientH = h768 - 39
+	effDPI := layoutDPIForClient(sw.clientW, sw.clientH, 96)
+	sw.ensureDrawResources(effDPI, false)
+	defer sw.releaseDrawResources()
+
+	var gfx uintptr
+	st, _, _ := procGdipGetImageGraphicsContext.Call(sw.gpBitmap, uintptr(unsafe.Pointer(&gfx)))
+	if st != 0 || gfx == 0 {
+		t.Fatalf("GdipGetImageGraphicsContext failed: %d", st)
+	}
+	sw.renderScene(gfx, sw.clientW, sw.clientH, effDPI, false)
+	_, _, _ = procGdipDeleteGraphics.Call(gfx)
+
+	for _, c := range sw.controls {
+		if c.bounds.Left < 0 || c.bounds.Top < 0 || c.bounds.Right > sw.clientW || c.bounds.Bottom > sw.clientH {
+			t.Fatalf("control %d clipped outside shrunk client (%dx%d): %+v", c.action, sw.clientW, sw.clientH, c.bounds)
+		}
+		cx := (c.bounds.Left + c.bounds.Right) / 2
+		cy := (c.bounds.Top + c.bounds.Bottom) / 2
+		if got := sw.hitTest(cx, cy); got != c.action {
+			t.Fatalf("shrunk hitTest(%d,%d) = %d, want %d", cx, cy, got, c.action)
+		}
+	}
+
+	if got := friendlySpeedtestError("Get https://speed.cloudflare.com: dial tcp: lookup: no such host"); got != "Check internet" {
+		t.Fatalf("friendlySpeedtestError(offline) = %q, want Check internet", got)
+	}
+	if got := friendlySpeedtestError("context deadline exceeded"); got != "Timed out" {
+		t.Fatalf("friendlySpeedtestError(timeout) = %q, want Timed out", got)
+	}
+}
+
+func TestTaskbarRegionClippingGuard(t *testing.T) {
+	hInst := getModuleHandle()
+	staticCls, _ := windows.UTF16PtrFromString("STATIC")
+	title, _ := windows.UTF16PtrFromString("WMS_Rgn_Test")
+	tb, _, _ := procCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(staticCls)),
+		uintptr(unsafe.Pointer(title)),
+		uintptr(wsPopup),
+		0, 0, 1000, 48,
+		0, 0, hInst, 0,
+	)
+	if tb == 0 {
+		t.Skip("CreateWindowExW unavailable in this test station")
+	}
+	defer procDestroyWindow.Call(tb)
+
+	childRect := rect{Left: 650, Top: 4, Right: 750, Bottom: 44}
+	// Normal taskbar without SetWindowRgn must not be flagged as clipped.
+	if isTaskbarRegionClippingChild(tb, childRect) {
+		t.Fatal("unclipped taskbar reported child as clipped")
+	}
+
+	// Simulate RoundedTB-style SetWindowRgn keeping only the rightmost tray segment [800..1000].
+	hRgn, _, _ := procCreateRectRgn.Call(800, 0, 1000, 48)
+	if hRgn == 0 {
+		t.Fatal("CreateRectRgn failed")
+	}
+	setWindowRgn := modUser32.NewProc("SetWindowRgn")
+	if ok, _, _ := setWindowRgn.Call(tb, hRgn, 0); ok == 0 {
+		_, _, _ = procDeleteObject.Call(hRgn)
+		t.Fatal("SetWindowRgn failed")
+	}
+
+	if !isTaskbarRegionClippingChild(tb, childRect) {
+		t.Fatal("expected child outside SetWindowRgn [800..1000] to be detected as clipped")
+	}
+	if isTaskbarRegionClippingChild(tb, rect{Left: 820, Top: 4, Right: 920, Bottom: 44}) {
+		t.Fatal("expected child inside SetWindowRgn [800..1000] not to be detected as clipped")
+	}
+}

@@ -141,3 +141,33 @@ func TestDefaultOptionsIndustryStandards(t *testing.T) {
 		t.Fatal("expected HTTP/2 disabled (non-nil empty TLSNextProto) for true parallel TCP streams")
 	}
 }
+
+func TestMeasureDownloadAbortsEarlyWhenAllStreamsFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("bytes") == "0" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	start := time.Now()
+	res := Run(context.Background(), Options{
+		BaseURL:          srv.URL,
+		PingCount:        2,
+		DownloadDuration: 6 * time.Second,
+		UploadDuration:   2 * time.Second,
+		Streams:          2,
+		PhaseGap:         -1,
+		Client:           srv.Client(),
+	}, nil)
+	elapsed := time.Since(start)
+
+	if res.Phase != PhaseError {
+		t.Fatalf("expected PhaseError when all download streams fail, got %s", res.Phase)
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("expected early abort (<2s), took %v", elapsed)
+	}
+}

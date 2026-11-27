@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 const (
@@ -233,11 +234,16 @@ func SaveTo(path string, cfg Config) error {
 		return fmt.Errorf("close temp config: %w", err)
 	}
 
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("replace config %q: %w", path, err)
+	var renameErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		renameErr = os.Rename(tmpPath, path)
+		if renameErr == nil {
+			cleanup = false
+			return nil
+		}
+		time.Sleep(15 * time.Millisecond)
 	}
-	cleanup = false
-	return nil
+	return fmt.Errorf("replace config %q: %w", path, renameErr)
 }
 
 var (

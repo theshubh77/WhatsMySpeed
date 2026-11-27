@@ -69,7 +69,9 @@ type App struct {
 	tray              *TrayManager
 	settings          *SettingsWindow
 	currentSample     network.SpeedSample
+	currentColors     ThemeColors
 	isLightTheme      bool
+	isAppLightTheme   bool
 	currentDPI        uint32
 	lastTaskbarWidth  int32
 	lastTaskbarHeight int32
@@ -84,12 +86,17 @@ type App struct {
 	lastH             int32
 	hasPos            bool
 
-	winEventCB     uintptr
-	foregroundHook uintptr
-	explorerHook   uintptr
-	explorerPID    uint32
-	taskbarHWND    uintptr
-	syncPending    atomic.Bool
+	winEventCB         uintptr
+	foregroundHook     uintptr
+	explorerHook       uintptr
+	explorerPID        uint32
+	taskbarHWND        uintptr
+	lastTaskbarRect    rect
+	lastTraySpan       int32
+	lastTrayVertical   bool
+	lastTrayDPI        uint32
+	startupSettleUntil time.Time
+	syncPending        atomic.Bool
 
 	metrics layoutMetrics
 
@@ -174,6 +181,14 @@ func (a *App) Run() error {
 
 	a.settings = NewSettingsWindow(a)
 	defer a.settings.Destroy()
+
+	a.startupSettleUntil = time.Now().Add(20 * time.Second)
+	globalTrayProbe.Start(func() {
+		if a.hostHWND != 0 && a.syncPending.CompareAndSwap(false, true) {
+			_, _, _ = procPostMessageW.Call(a.hostHWND, wmSyncOverlay, 0, 0)
+		}
+	})
+	defer globalTrayProbe.Stop()
 
 	a.refreshEnvironment(true)
 
@@ -291,7 +306,14 @@ func (a *App) createWindow() error {
 
 func (a *App) ensureOverlayWindow() bool {
 	if a.hwnd != 0 {
-		return true
+		if isWindowHandleValid(a.hwnd) {
+			return true
+		}
+		a.hwnd = 0
+		a.attachedParent = 0
+		a.isVisible = false
+		a.hasPos = false
+		a.trackingLeave = false
 	}
 	if err := a.createWindow(); err != nil {
 		return false
@@ -313,7 +335,11 @@ func wndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 
 func (a *App) handleMessage(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 	if a.wmTaskbarCreated != 0 && message == a.wmTaskbarCreated {
+		a.startupSettleUntil = time.Now().Add(20 * time.Second)
 		a.refreshEnvironment(true)
+		if a.taskbarHWND != 0 && !a.lastTaskbarRect.Empty() {
+			globalTrayProbe.Trigger(a.taskbarHWND, a.lastTaskbarRect, a.currentDPI, 0)
+		}
 		a.renderAndPosition()
 		return 0
 	}
@@ -333,6 +359,9 @@ func (a *App) handleMessage(hwnd uintptr, message uint32, wParam, lParam uintptr
 
 	case wmSyncOverlay:
 		a.syncPending.Store(false)
+		if a.taskbarHWND != 0 && !a.lastTaskbarRect.Empty() {
+			globalTrayProbe.Trigger(a.taskbarHWND, a.lastTaskbarRect, a.currentDPI, 150*time.Millisecond)
+		}
 		a.syncPositionAndZOrder()
 		_, _, _ = procSetTimer.Call(a.hostHWND, timerReassertID, reassertDelayMs, 0)
 		return 0
@@ -363,6 +392,9 @@ func (a *App) handleMessage(hwnd uintptr, message uint32, wParam, lParam uintptr
 		a.paintLayered()
 		return 0
 
+	case wmMouseActivate:
+		return maNoActivate
+
 	case wmLButtonDblClk:
 		a.OpenSettingsWindow(false)
 		return 0
@@ -380,11 +412,49 @@ func (a *App) handleMessage(hwnd uintptr, message uint32, wParam, lParam uintptr
 		}
 		return 0
 
-	case wmSettingChange, wmDisplayChange, wmDpiChanged:
+	case wmSettingChange, wmDisplayChange, wmDpiChanged, wmDpiChangedAfterParent:
 		a.refreshEnvironment(false)
+		if a.taskbarHWND != 0 && !a.lastTaskbarRect.Empty() {
+			globalTrayProbe.Trigger(a.taskbarHWND, a.lastTaskbarRect, a.currentDPI, 0)
+		}
 		a.renderAndPosition()
 		if a.settings != nil {
 			a.settings.RefreshAppearance()
+		}
+		return 0
+
+	case wmPowerBroadcast:
+		if wParam == pbtApmResumeAutomatic || wParam == pbtApmResumeSuspend {
+			a.monitor.Reset()
+			a.startupSettleUntil = time.Now().Add(15 * time.Second)
+			a.refreshEnvironment(true)
+			if a.taskbarHWND != 0 && !a.lastTaskbarRect.Empty() {
+				globalTrayProbe.Trigger(a.taskbarHWND, a.lastTaskbarRect, a.currentDPI, 0)
+			}
+			a.renderAndPosition()
+		}
+		return 1
+
+	case wmQueryEndSession:
+		return 1
+
+	case wmEndSession:
+		if wParam != 0 {
+			a.userClosing = true
+			globalTrayProbe.Stop()
+			a.uninstallWinEventHooks()
+			if a.settings != nil {
+				a.settings.CancelSpeedTest()
+			}
+			if a.tray != nil {
+				a.tray.Remove()
+			}
+			if a.hwnd != 0 {
+				_, _, _ = procDestroyWindow.Call(a.hwnd)
+			}
+			if a.hostHWND != 0 {
+				_, _, _ = procDestroyWindow.Call(a.hostHWND)
+			}
 		}
 		return 0
 
@@ -429,11 +499,22 @@ func (a *App) onSampleTick() {
 		a.currentSample = s
 	}
 
+	prevAppLight := a.isAppLightTheme
 	a.refreshEnvironment(false)
+	if a.taskbarHWND != 0 && !a.lastTaskbarRect.Empty() {
+		minAge := 2 * time.Second
+		if time.Now().Before(a.startupSettleUntil) {
+			minAge = 500 * time.Millisecond
+		}
+		globalTrayProbe.Trigger(a.taskbarHWND, a.lastTaskbarRect, a.currentDPI, minAge)
+	}
 	a.updateTrayTooltip()
 	a.renderAndPosition()
 
 	if a.settings != nil {
+		if a.cfg.Theme == config.ThemeSystem && a.isAppLightTheme != prevAppLight {
+			a.settings.RefreshAppearance()
+		}
 		a.settings.NotifySampleUpdated()
 	}
 }
@@ -456,43 +537,58 @@ func (a *App) updateTrayTooltip() {
 }
 
 func (a *App) refreshEnvironment(forceTrayReadd bool) {
-	info := QueryTaskbarInfo()
+	info := QueryTaskbarInfoWithExclusion(a.hwnd)
 	dpi := info.DPI
 	if dpi == 0 {
 		dpi = getSystemDPI()
 	}
 
-	isLight := DetectTaskbarLightTheme()
+	colors := DetectTaskbarColors()
+	isLight := colors.IsLight
+	appLight := DetectAppsLightTheme()
 	var tbWidth, tbHeight int32
 	if info.Valid && !info.TaskbarRect.Empty() {
 		tbWidth = info.TaskbarRect.Width()
 		tbHeight = info.TaskbarRect.Height()
+		a.lastTaskbarRect = info.TaskbarRect
+	} else {
+		a.lastTaskbarRect = rect{}
+	}
+	if info.TaskbarHWND != 0 {
+		a.taskbarHWND = info.TaskbarHWND
 	}
 
 	needRebuild := a.gpFont == 0 ||
 		a.currentDPI != dpi ||
+		a.currentColors != colors ||
 		a.isLightTheme != isLight ||
 		a.lastTaskbarWidth != tbWidth ||
 		a.lastTaskbarHeight != tbHeight
 
 	a.currentDPI = dpi
+	a.currentColors = colors
 	a.isLightTheme = isLight
+	a.isAppLightTheme = appLight
 	a.lastTaskbarWidth = tbWidth
 	a.lastTaskbarHeight = tbHeight
 
 	if needRebuild {
-		a.rebuildDrawingResources(dpi, isLight, tbWidth, tbHeight)
+		a.rebuildDrawingResourcesWithColors(dpi, colors, tbWidth, tbHeight)
 	}
 	if a.tray != nil {
-		_ = a.tray.SyncIcon(dpi, isLight, forceTrayReadd)
+		_ = a.tray.SyncIcon(dpi, colors, forceTrayReadd)
 	}
 }
 
 func (a *App) rebuildDrawingResources(dpi uint32, isLight bool, taskbarWidth, taskbarHeight int32) {
+	a.rebuildDrawingResourcesWithColors(dpi, ColorsForTheme(isLight), taskbarWidth, taskbarHeight)
+}
+
+func (a *App) rebuildDrawingResourcesWithColors(dpi uint32, colors ThemeColors, taskbarWidth, taskbarHeight int32) {
 	a.releaseRenderResources()
 
+	a.currentColors = colors
 	a.metrics = a.computeMetrics(dpi, taskbarWidth, taskbarHeight)
-	colors := ColorsForTheme(isLight)
 
 	screenDC, _, _ := procGetDC.Call(0)
 	if screenDC != 0 {
@@ -773,7 +869,7 @@ func (a *App) measureColumns(dpi uint32, fontPx, unitFontPx, iconSize int32) (in
 	}
 
 	var maxValW float32
-	for _, sample := range []string{"999.9", "1023", "88.8", "8.88"} {
+	for _, sample := range []string{"999.9", "888.8", "1023", "88.8", "8.88"} {
 		w, _ := gpMeasureString(gfx, font, strFmt, sample)
 		if w > maxValW {
 			maxValW = w
@@ -944,12 +1040,18 @@ func (a *App) syncPositionAndZOrder() {
 	a.positionOverlay(false)
 }
 
+func (a *App) hideOverlayWindow() {
+	a.isHovered = false
+	a.trackingLeave = false
+	if a.hwnd != 0 && (a.isVisible || isWindowActuallyVisible(a.hwnd)) {
+		_, _, _ = procShowWindow.Call(a.hwnd, swHide)
+		a.isVisible = false
+	}
+}
+
 func (a *App) positionOverlay(repaint bool) {
 	if a.cfg.DisplayMode == config.ModeHide {
-		if a.hwnd != 0 && (a.isVisible || isWindowActuallyVisible(a.hwnd)) {
-			_, _, _ = procShowWindow.Call(a.hwnd, swHide)
-			a.isVisible = false
-		}
+		a.hideOverlayWindow()
 		return
 	}
 
@@ -957,20 +1059,74 @@ func (a *App) positionOverlay(repaint bool) {
 		return
 	}
 
-	info := QueryTaskbarInfo()
+	info := QueryTaskbarInfoWithExclusion(a.hwnd)
 	a.ensureWinEventHooks(info.TaskbarHWND)
 	a.taskbarHWND = info.TaskbarHWND
+	if info.Valid && !info.TaskbarRect.Empty() {
+		a.lastTaskbarRect = info.TaskbarRect
+		isVertical := info.TaskbarRect.Height() > info.TaskbarRect.Width()
+		if !info.TrayRect.Empty() {
+			var span int32
+			switch {
+			case isVertical:
+				span = info.TaskbarRect.Bottom - info.TrayRect.Top
+			case info.RTL:
+				span = info.TrayRect.Right - info.TaskbarRect.Left
+			default:
+				span = info.TaskbarRect.Right - info.TrayRect.Left
+			}
+			if span > 0 {
+				a.lastTraySpan = span
+				a.lastTrayVertical = isVertical
+				a.lastTrayDPI = info.DPI
+			}
+		} else if a.lastTraySpan > 0 && a.lastTrayVertical == isVertical && a.lastTrayDPI == info.DPI {
+			// Reuse last observed tray width briefly if tray children are mid-restart.
+			switch {
+			case isVertical && info.TaskbarRect.Bottom-a.lastTraySpan > info.TaskbarRect.Top:
+				info.TrayRect = rect{
+					Left:   info.TaskbarRect.Left,
+					Top:    info.TaskbarRect.Bottom - a.lastTraySpan,
+					Right:  info.TaskbarRect.Right,
+					Bottom: info.TaskbarRect.Bottom,
+				}
+			case info.RTL && info.TaskbarRect.Left+a.lastTraySpan < info.TaskbarRect.Right:
+				info.TrayRect = rect{
+					Left:   info.TaskbarRect.Left,
+					Top:    info.TaskbarRect.Top,
+					Right:  info.TaskbarRect.Left + a.lastTraySpan,
+					Bottom: info.TaskbarRect.Bottom,
+				}
+			case !isVertical && !info.RTL && info.TaskbarRect.Right-a.lastTraySpan > info.TaskbarRect.Left:
+				info.TrayRect = rect{
+					Left:   info.TaskbarRect.Right - a.lastTraySpan,
+					Top:    info.TaskbarRect.Top,
+					Right:  info.TaskbarRect.Right,
+					Bottom: info.TaskbarRect.Bottom,
+				}
+			}
+		}
+	}
 
 	x, y, shouldShow := ComputeOverlayBounds(info, a.metrics.width, a.metrics.height)
 	if !shouldShow {
-		if a.isVisible || isWindowActuallyVisible(a.hwnd) {
-			_, _, _ = procShowWindow.Call(a.hwnd, swHide)
-			a.isVisible = false
-		}
+		a.hideOverlayWindow()
 		return
 	}
 
-	a.attachToTaskbar(info.TaskbarHWND)
+	attachHWND := info.TaskbarHWND
+	if attachHWND != 0 && info.Valid && !info.TaskbarRect.Empty() {
+		localChild := rect{
+			Left:   x - info.TaskbarRect.Left,
+			Top:    y - info.TaskbarRect.Top,
+			Right:  x - info.TaskbarRect.Left + a.metrics.width,
+			Bottom: y - info.TaskbarRect.Top + a.metrics.height,
+		}
+		if isTaskbarRegionClippingChild(attachHWND, localChild) {
+			attachHWND = 0
+		}
+	}
+	a.attachToTaskbar(attachHWND)
 
 	paintX, paintY := x, y
 	zAfter := hwndTopmost
@@ -987,7 +1143,10 @@ func (a *App) positionOverlay(repaint bool) {
 	}
 
 	winVisible := isWindowActuallyVisible(a.hwnd)
+	curRect, hasCurRect := getWindowRect(a.hwnd)
+	drifted := hasCurRect && (curRect.Left != x || curRect.Top != y || curRect.Width() != a.metrics.width || curRect.Height() != a.metrics.height)
 	posChanged := !a.hasPos ||
+		drifted ||
 		a.lastX != x ||
 		a.lastY != y ||
 		a.lastPaintX != paintX ||
@@ -1064,12 +1223,15 @@ func winEventProc(hWinEventHook, event, hwnd, idObject, idChild, idEventThread, 
 	}
 
 	ev := uint32(event)
-	if ev >= eventObjectReorder {
-		if (ev != eventObjectReorder && ev != eventObjectLocationChange) ||
+	if ev >= eventObjectShow {
+		if app.hwnd != 0 && hwnd == app.hwnd {
+			return 0
+		}
+		if (ev != eventObjectShow && ev != eventObjectHide && ev != eventObjectReorder && ev != eventObjectLocationChange) ||
 			int32(idObject) != objidWindow || int32(idChild) != 0 {
 			return 0
 		}
-		if ev == eventObjectLocationChange && app.taskbarHWND != 0 && hwnd != app.taskbarHWND {
+		if ev == eventObjectLocationChange && app.taskbarHWND != 0 && !isDescendantWindow(app.taskbarHWND, hwnd) {
 			return 0
 		}
 	}
@@ -1110,7 +1272,7 @@ func (a *App) ensureWinEventHooks(taskbarHWND uintptr) {
 				a.explorerHook = 0
 			}
 			h, _, _ := procSetWinEventHook.Call(
-				eventObjectReorder,
+				eventObjectShow,
 				eventObjectLocationChange,
 				0,
 				a.winEventCB,
@@ -1186,7 +1348,7 @@ func (a *App) paintLayeredAt(x, y int32) {
 		AlphaFormat:         acSrcAlpha,
 	}
 
-	_, _, _ = procUpdateLayeredWindow.Call(
+	ok, _, _ := procUpdateLayeredWindow.Call(
 		a.hwnd,
 		screenDC,
 		uintptr(unsafe.Pointer(&ptDst)),
@@ -1197,6 +1359,23 @@ func (a *App) paintLayeredAt(x, y int32) {
 		uintptr(unsafe.Pointer(&blend)),
 		ulwAlpha,
 	)
+	if ok == 0 && a.hwnd != 0 {
+		exStyle := getWindowExStyle(a.hwnd)
+		if (exStyle & wsExLayered) == 0 {
+			setWindowExStyle(a.hwnd, exStyle|wsExLayered)
+		}
+		_, _, _ = procUpdateLayeredWindow.Call(
+			a.hwnd,
+			screenDC,
+			uintptr(unsafe.Pointer(&ptDst)),
+			uintptr(unsafe.Pointer(&winSz)),
+			a.memDC,
+			uintptr(unsafe.Pointer(&ptSrc)),
+			0,
+			uintptr(unsafe.Pointer(&blend)),
+			ulwAlpha,
+		)
+	}
 }
 
 func (a *App) drawOverlayContent(gfx uintptr, up, down network.FormattedSpeed) {
@@ -1329,6 +1508,15 @@ func (a *App) openContextMenu() {
 		return
 	}
 	cmd := a.tray.ShowContextMenu(a.cfg, a.cfg.StartWithWindows)
+	if a.isHovered && a.hwnd != 0 {
+		var pt point
+		_, _, _ = procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+		if r, ok := getWindowRect(a.hwnd); !ok || !r.Contains(pt.X, pt.Y) {
+			a.isHovered = false
+			a.trackingLeave = false
+			a.paintLayered()
+		}
+	}
 
 	next := a.cfg
 	switch cmd {
@@ -1435,7 +1623,11 @@ func (a *App) ApplyConfig(next config.Config) {
 		}
 	}
 
-	a.rebuildDrawingResources(a.currentDPI, a.isLightTheme, a.lastTaskbarWidth, a.lastTaskbarHeight)
+	colors := a.currentColors
+	if colors.TextARGB == 0 {
+		colors = ColorsForTheme(a.isLightTheme)
+	}
+	a.rebuildDrawingResourcesWithColors(a.currentDPI, colors, a.lastTaskbarWidth, a.lastTaskbarHeight)
 	a.hasPos = false
 	a.updateTrayTooltip()
 	a.renderAndPosition()

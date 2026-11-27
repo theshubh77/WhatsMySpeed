@@ -2,6 +2,7 @@ package network
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -186,6 +187,33 @@ func (m *Monitor) Sample() (SpeedSample, error) {
 	}, nil
 }
 
+func isVirtualSwitchOrPseudoAdapter(alias, desc string) bool {
+	combined := strings.ToLower(alias + " " + desc)
+	for _, needle := range []string{
+		"vethernet",
+		"hyper-v",
+		"wsl",
+		"vmware",
+		"virtualbox",
+		"loopback",
+		"npcap",
+		"wintun",
+		"wireguard",
+		"tailscale",
+		"zerotier",
+		"tap-windows",
+		"teredo",
+		"isatap",
+		"6to4",
+		"kernel debug",
+	} {
+		if strings.Contains(combined, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func isCountableInterface(row *mibIfRow2) bool {
 	if row.OperStatus != ifOperStatusUp {
 		return false
@@ -200,6 +228,14 @@ func isCountableInterface(row *mibIfRow2) bool {
 	// Prefer hardware NICs or connected physical/virtual endpoints to avoid virtual/pseudo bloat.
 	if row.InterfaceAndOperStatusFlags&(flagHardwareInterface|flagConnectorPresent) == 0 {
 		return false
+	}
+	// Avoid double-counting internal Hyper-V/WSL/Docker/VM/VPN switches when not hardware NICs.
+	if row.InterfaceAndOperStatusFlags&flagHardwareInterface == 0 {
+		alias := windows.UTF16ToString(row.Alias[:])
+		desc := windows.UTF16ToString(row.Description[:])
+		if isVirtualSwitchOrPseudoAdapter(alias, desc) {
+			return false
+		}
 	}
 	return true
 }

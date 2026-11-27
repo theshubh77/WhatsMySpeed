@@ -161,3 +161,54 @@ func TestLiveGetIfTable2(t *testing.T) {
 	}
 	t.Logf("Live active countable interfaces: %d", s.ActiveInterfaces)
 }
+
+func TestIsCountableInterfaceFiltersVirtualSwitches(t *testing.T) {
+	copyU16 := func(dst []uint16, s string) {
+		for i := 0; i < len(s) && i < len(dst)-1; i++ {
+			dst[i] = uint16(s[i])
+		}
+	}
+
+	// Real hardware NIC must always pass even if name has "Hyper-V" in driver text.
+	hw := mibIfRow2{
+		OperStatus:                  ifOperStatusUp,
+		Type:                        6,
+		InterfaceAndOperStatusFlags: flagHardwareInterface | flagConnectorPresent,
+	}
+	copyU16(hw.Alias[:], "Wi-Fi")
+	if !isCountableInterface(&hw) {
+		t.Fatal("expected hardware NIC to be countable")
+	}
+
+	// Non-hardware USB/cellular adapter with connector present should still pass.
+	usb := mibIfRow2{
+		OperStatus:                  ifOperStatusUp,
+		Type:                        6,
+		InterfaceAndOperStatusFlags: flagConnectorPresent,
+	}
+	copyU16(usb.Alias[:], "USB Ethernet")
+	copyU16(usb.Description[:], "Remote NDIS Compatible Device")
+	if !isCountableInterface(&usb) {
+		t.Fatal("expected non-virtual RNDIS/tether adapter to be countable")
+	}
+
+	// Non-hardware vEthernet / WSL / VMware / VPN adapters must be excluded to prevent double-counting.
+	for _, name := range []string{
+		"vEthernet (WSL (Hyper-V firewall))",
+		"Hyper-V Virtual Ethernet Adapter",
+		"VMware Network Adapter VMnet8",
+		"VirtualBox Host-Only Ethernet Adapter",
+		"Tailscale Tunnel",
+		"Npcap Loopback Adapter",
+	} {
+		vRow := mibIfRow2{
+			OperStatus:                  ifOperStatusUp,
+			Type:                        6,
+			InterfaceAndOperStatusFlags: flagConnectorPresent,
+		}
+		copyU16(vRow.Alias[:], name)
+		if isCountableInterface(&vRow) {
+			t.Fatalf("virtual adapter %q should be excluded from physical counters", name)
+		}
+	}
+}

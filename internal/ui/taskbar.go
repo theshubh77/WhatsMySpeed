@@ -14,6 +14,7 @@ type TaskbarInfo struct {
 	TrayRect           rect
 	MonitorRect        rect
 	DPI                uint32
+	RTL                bool
 	AutoHide           bool
 	TaskbarHidden      bool
 	FullscreenBlocking bool
@@ -107,16 +108,18 @@ func isFullscreenWindowOnMonitor(hMon uintptr, monRect rect, taskbarHWND uintptr
 	if isShellOrFlyoutWindow(cls, exe) {
 		return false
 	}
+	if (getWindowExStyle(fg) & wsExTransparent) != 0 {
+		return false
+	}
 
 	fgMon, _, _ := procMonitorFromWindow.Call(fg, monitorDefaultToNearest)
 	if fgMon != hMon {
 		return false
 	}
 
-	if quns, ok := queryUserNotificationState(); ok {
-		if quns == qunsRunningD3DFullScreen || quns == qunsPresentationMode {
-			return true
-		}
+	quns, hasQuns := queryUserNotificationState()
+	if hasQuns && (quns == qunsRunningD3DFullScreen || quns == qunsPresentationMode) {
+		return true
 	}
 
 	fgRect, ok := getWindowVisibleBounds(fg)
@@ -127,18 +130,159 @@ func isFullscreenWindowOnMonitor(hMon uintptr, monRect rect, taskbarHWND uintptr
 		fgRect.Right < monRect.Right || fgRect.Bottom < monRect.Bottom {
 		return false
 	}
+	// If Windows keeps Shell_TrayWnd above fg in Z-order (e.g. third-party desktop widgets),
+	// the taskbar is not actually covered by a fullscreen window.
+	if taskbarHWND != 0 && isWindowAbove(taskbarHWND, fg) {
+		return false
+	}
 
 	style := getWindowStyle(fg)
 	if (style & wsCaption) == wsCaption {
-		quns, ok := queryUserNotificationState()
-		return ok && quns == qunsBusy
+		return hasQuns && quns == qunsBusy
 	}
 	return true
 }
 
-// QueryTaskbarInfo reads live Shell_TrayWnd and TrayNotifyWnd bounds from Win32.
+func findChildWindow(parent, childAfter uintptr) uintptr {
+	hwnd, _, _ := procFindWindowExW.Call(parent, childAfter, 0, 0)
+	return hwnd
+}
+
+func findPrimaryTaskbarWindow() uintptr {
+	var firstMatch, explorerMatch uintptr
+	cur := uintptr(0)
+	for i := 0; i < 32; i++ {
+		cur = findWindowEx(0, cur, "Shell_TrayWnd")
+		if cur == 0 {
+			break
+		}
+		if firstMatch == 0 {
+			firstMatch = cur
+		}
+		if getProcessExeName(getWindowProcessID(cur)) == "explorer.exe" {
+			if explorerMatch == 0 {
+				explorerMatch = cur
+			}
+			if isWindowActuallyVisible(cur) {
+				return cur
+			}
+		}
+	}
+	if explorerMatch != 0 {
+		return explorerMatch
+	}
+	if firstMatch != 0 {
+		return firstMatch
+	}
+	return findWindow("Shell_TrayWnd")
+}
+
+func isWin32TrayDescendant(cls string, r, tb rect, dpi uint32, isRTL bool) bool {
+	if r.Empty() || tb.Empty() {
+		return false
+	}
+	if r.Right <= tb.Left || r.Left >= tb.Right || r.Bottom <= tb.Top || r.Top >= tb.Bottom {
+		return false
+	}
+
+	isVertical := tb.Height() > tb.Width()
+	if !isVertical {
+		if r.Width() >= (tb.Width()*3)/4 {
+			return false
+		}
+		if isRTL {
+			if r.Right >= tb.Right {
+				return false
+			}
+		} else if r.Left <= tb.Left {
+			return false
+		}
+		switch cls {
+		case "TrayNotifyWnd",
+			"TrayInputIndicatorWClass",
+			"TrayClockWClass",
+			"TrayButton",
+			"TrayShowDesktopButtonWClass",
+			"SystemTray_Main":
+			return true
+		case "ToolbarWindow32",
+			"Windows.UI.Composition.DesktopWindowContentBridge",
+			"Windows.UI.Input.InputSite.WindowClass":
+			if isRTL {
+				return r.Right <= tb.Left+tb.Width()/2 && r.Left <= tb.Left+scaleDPIInt(420, dpi)
+			}
+			return r.Left >= tb.Left+tb.Width()/2 && r.Right >= tb.Right-scaleDPIInt(420, dpi)
+		default:
+			return false
+		}
+	}
+
+	if r.Top <= tb.Top || r.Height() >= (tb.Height()*3)/4 {
+		return false
+	}
+	switch cls {
+	case "TrayNotifyWnd",
+		"TrayInputIndicatorWClass",
+		"TrayClockWClass",
+		"TrayButton",
+		"TrayShowDesktopButtonWClass",
+		"SystemTray_Main":
+		return true
+	case "ToolbarWindow32",
+		"Windows.UI.Composition.DesktopWindowContentBridge",
+		"Windows.UI.Input.InputSite.WindowClass":
+		return r.Top >= tb.Top+tb.Height()/2 && r.Bottom >= tb.Bottom-scaleDPIInt(420, dpi)
+	default:
+		return false
+	}
+}
+
+func collectWin32TrayRect(shellTray, ignoreHWND uintptr, tb rect, dpi uint32, isRTL bool) (rect, bool) {
+	var out rect
+	var ok bool
+	var walk func(parent uintptr, depth int)
+	walk = func(parent uintptr, depth int) {
+		if depth > 4 || parent == 0 {
+			return
+		}
+		child := uintptr(0)
+		for i := 0; i < 64; i++ {
+			child = findChildWindow(parent, child)
+			if child == 0 {
+				break
+			}
+			if child == ignoreHWND || !isWindowActuallyVisible(child) {
+				continue
+			}
+			r, rOK := getWindowRect(child)
+			if rOK {
+				cls := getWindowClassName(child)
+				if isWin32TrayDescendant(cls, r, tb, dpi, isRTL) {
+					out, ok = unionRect(out, ok, r, true)
+				}
+			}
+			walk(child, depth+1)
+		}
+	}
+	walk(shellTray, 0)
+
+	if !ok {
+		trayNotify := findWindowEx(shellTray, 0, "TrayNotifyWnd")
+		if r, rOK := getWindowRect(trayNotify); rOK && !r.Empty() {
+			return r, true
+		}
+	}
+	return out, ok
+}
+
+// QueryTaskbarInfo reads live Shell_TrayWnd and system tray bounds from Win32 + cached UIA.
 func QueryTaskbarInfo() TaskbarInfo {
-	shellTray := findWindow("Shell_TrayWnd")
+	return QueryTaskbarInfoWithExclusion(0)
+}
+
+// QueryTaskbarInfoWithExclusion queries live taskbar geometry while excluding the overlay HWND itself.
+func QueryTaskbarInfoWithExclusion(ignoreHWND uintptr) TaskbarInfo {
+	shellTray := findPrimaryTaskbarWindow()
 	if shellTray == 0 {
 		return TaskbarInfo{DPI: getSystemDPI()}
 	}
@@ -160,18 +304,21 @@ func QueryTaskbarInfo() TaskbarInfo {
 		}
 	}
 
-	trayNotify := findWindowEx(shellTray, 0, "TrayNotifyWnd")
-	trayRect, _ := getWindowRect(trayNotify)
+	isRTL := (getWindowExStyle(shellTray) & wsExLayoutRTL) != 0
+	win32TrayRect, win32OK := collectWin32TrayRect(shellTray, ignoreHWND, tbRect, dpi, isRTL)
+	uiaTrayRect, uiaOK := globalTrayProbe.Snapshot(shellTray, tbRect)
+	trayRect, _ := unionRect(win32TrayRect, win32OK, uiaTrayRect, uiaOK)
 
 	autoHide := isTaskbarAutoHide()
 	hidden := tbVisible == 0
 	if autoHide && !monRect.Empty() {
+		edgeTol := scaleDPIInt(4, dpi)
 		if tbRect.Width() >= tbRect.Height() {
-			if tbRect.Top >= monRect.Bottom-2 || tbRect.Bottom <= monRect.Top+2 {
+			if tbRect.Top >= monRect.Bottom-edgeTol || tbRect.Bottom <= monRect.Top+edgeTol {
 				hidden = true
 			}
 		} else {
-			if tbRect.Right <= monRect.Left+2 || tbRect.Left >= monRect.Right-2 {
+			if tbRect.Right <= monRect.Left+edgeTol || tbRect.Left >= monRect.Right-edgeTol {
 				hidden = true
 			}
 		}
@@ -186,6 +333,7 @@ func QueryTaskbarInfo() TaskbarInfo {
 		TrayRect:           trayRect,
 		MonitorRect:        monRect,
 		DPI:                dpi,
+		RTL:                isRTL,
 		AutoHide:           autoHide,
 		TaskbarHidden:      hidden,
 		FullscreenBlocking: fullscreen,
@@ -193,7 +341,8 @@ func QueryTaskbarInfo() TaskbarInfo {
 }
 
 // ComputeOverlayBounds calculates the docked screen position immediately to the left
-// of the Windows 11 system tray chevron (TrayNotifyWnd), or centered above it for vertical taskbars.
+// of the Windows 11 system tray chevron (TrayNotifyWnd / UIA tray icons, or right of it on RTL),
+// or centered above it for vertical taskbars.
 func ComputeOverlayBounds(info TaskbarInfo, overlayW, overlayH int32) (x, y int32, visible bool) {
 	if !info.Valid || info.TaskbarHidden || info.FullscreenBlocking || info.TaskbarRect.Empty() {
 		return 0, 0, false
@@ -206,18 +355,47 @@ func ComputeOverlayBounds(info TaskbarInfo, overlayW, overlayH int32) (x, y int3
 		// Standard horizontal taskbar (bottom or top).
 		y = tb.Top + (tb.Height()-overlayH)/2
 
+		if info.RTL {
+			minX := tb.Left + gap
+			if !info.TrayRect.Empty() && info.TrayRect.Right < tb.Right {
+				minX = info.TrayRect.Right + gap
+				x = minX
+			} else {
+				fallbackTrayWidth := scaleDPIInt(240, info.DPI)
+				x = tb.Left + fallbackTrayWidth + gap
+			}
+			if x < minX {
+				x = minX
+			}
+			if x+overlayW > tb.Right-gap {
+				x = tb.Right - overlayW - gap
+			}
+			if x < tb.Left {
+				x = tb.Left
+			}
+			return x, y, true
+		}
+
+		maxX := tb.Right - overlayW - gap
 		if !info.TrayRect.Empty() && info.TrayRect.Left > tb.Left {
-			x = info.TrayRect.Left - overlayW - gap
+			maxX = info.TrayRect.Left - overlayW - gap
+			x = maxX
 		} else {
-			fallbackTrayWidth := scaleDPIInt(140, info.DPI)
+			fallbackTrayWidth := scaleDPIInt(240, info.DPI)
 			x = tb.Right - fallbackTrayWidth - overlayW - gap
 		}
 
+		if x > maxX {
+			x = maxX
+		}
 		if x < tb.Left+gap {
 			x = tb.Left + gap
 		}
-		if x+overlayW > tb.Right-gap {
-			x = tb.Right - overlayW - gap
+		if x+overlayW > tb.Right {
+			x = tb.Right - overlayW
+			if x < tb.Left {
+				x = tb.Left
+			}
 		}
 		return x, y, true
 	}
@@ -233,7 +411,7 @@ func ComputeOverlayBounds(info TaskbarInfo, overlayW, overlayH int32) (x, y int3
 	if !info.TrayRect.Empty() && info.TrayRect.Top > tb.Top {
 		y = info.TrayRect.Top - overlayH - gap
 	} else {
-		y = tb.Bottom - overlayH - scaleDPIInt(120, info.DPI)
+		y = tb.Bottom - overlayH - scaleDPIInt(200, info.DPI)
 	}
 	if y+overlayH > tb.Bottom-gap {
 		y = tb.Bottom - overlayH - gap

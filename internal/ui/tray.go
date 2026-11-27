@@ -36,12 +36,13 @@ const (
 
 // TrayManager owns the Shell_NotifyIconW icon and popup context menu.
 type TrayManager struct {
-	hwnd    uintptr
-	hIcon   uintptr
-	dpi     uint32
-	isLight bool
-	added   bool
-	lastTip string
+	hwnd     uintptr
+	hIcon    uintptr
+	dpi      uint32
+	isLight  bool
+	trayARGB uint32
+	added    bool
+	lastTip  string
 }
 
 // NewTrayManager creates a TrayManager bound to the message window hwnd.
@@ -64,15 +65,14 @@ func (t *TrayManager) buildNID(flags uint32, tip string) notifyIconDataW {
 }
 
 // SyncIcon ensures the system tray icon is registered and sized for the current DPI.
-func (t *TrayManager) SyncIcon(dpi uint32, isLight bool, forceReadd bool) error {
-	needNewIcon := t.hIcon == 0 || t.dpi != dpi || t.isLight != isLight
+func (t *TrayManager) SyncIcon(dpi uint32, colors ThemeColors, forceReadd bool) error {
+	needNewIcon := t.hIcon == 0 || t.dpi != dpi || t.isLight != colors.IsLight || t.trayARGB != colors.TrayIconARGB
 	var oldIcon uintptr
 
 	if needNewIcon {
 		w, h := getSmallIconMetrics(dpi)
 		newIcon, err := CreatePNGHICON(assets.AppLogoPNG, w, h)
 		if err != nil {
-			colors := ColorsForTheme(isLight)
 			newIcon, err = CreateTrayHICON(assets.IconGaugeBold, dpi, colors.TrayIconARGB)
 			if err != nil {
 				return err
@@ -81,7 +81,8 @@ func (t *TrayManager) SyncIcon(dpi uint32, isLight bool, forceReadd bool) error 
 		oldIcon = t.hIcon
 		t.hIcon = newIcon
 		t.dpi = dpi
-		t.isLight = isLight
+		t.isLight = colors.IsLight
+		t.trayARGB = colors.TrayIconARGB
 	}
 
 	if !t.added || forceReadd {
@@ -93,10 +94,21 @@ func (t *TrayManager) SyncIcon(dpi uint32, isLight bool, forceReadd bool) error 
 		ok, _, _ := procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&nid)))
 		if ok != 0 {
 			t.added = true
+		} else {
+			t.added = false
 		}
 	} else if needNewIcon {
 		nid := t.buildNID(nifIcon, "")
-		_, _, _ = procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&nid)))
+		ok, _, _ := procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&nid)))
+		if ok == 0 {
+			tip := t.lastTip
+			if tip == "" {
+				tip = config.AppName
+			}
+			addNid := t.buildNID(nifMessage|nifIcon|nifTip, tip)
+			addOK, _, _ := procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&addNid)))
+			t.added = addOK != 0
+		}
 	}
 
 	if oldIcon != 0 {
@@ -110,9 +122,15 @@ func (t *TrayManager) UpdateTooltip(tip string) {
 	if !t.added || tip == t.lastTip {
 		return
 	}
-	t.lastTip = tip
 	nid := t.buildNID(nifTip, tip)
-	_, _, _ = procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&nid)))
+	ok, _, _ := procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&nid)))
+	if ok != 0 {
+		t.lastTip = tip
+		return
+	}
+	t.added = false
+	t.lastTip = tip
+	_ = t.SyncIcon(t.dpi, ThemeColors{IsLight: t.isLight, TrayIconARGB: t.trayARGB}, true)
 }
 
 // Remove deletes the system tray icon and frees its HICON resource.
