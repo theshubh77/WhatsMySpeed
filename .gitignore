@@ -1,4 +1,4 @@
-# Binaries and build artifacts
+# Binaries, packages, and build artifacts
 *.exe
 *.exe~
 *.dll
@@ -6,12 +6,42 @@
 *.dylib
 *.test
 *.out
+*.msix
+*.msixbundle
+*.msixupload
+*.appx
+*.appxsym
+*.appxupload
+*.pri
 /dist/
 /build/
 /tools/
 
-# IDE, OS, and local agent files
+# Signing certificates and keys
+*.cer
+*.pfx
+*.pvk
+*.snk
+
+# Logs, temporary files, and local instructions
+*.log
+*.tmp
 AGENTS.md
+AGENTS.local.md
+agent.md
+AGENT.md
+CLAUDE.md
+GEMINI.md
+.agent/
+.agents/
+.claude/
+.gemini/
+.cursor/
+.cursorrules
+.windsurfrules
+.clinerules
+
+# IDE and OS files
 .vscode/
 .idea/
 Thumbs.db
