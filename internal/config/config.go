@@ -235,13 +235,13 @@ func SaveTo(path string, cfg Config) error {
 	}
 
 	var renameErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 8; attempt++ {
 		renameErr = os.Rename(tmpPath, path)
 		if renameErr == nil {
 			cleanup = false
 			return nil
 		}
-		time.Sleep(15 * time.Millisecond)
+		time.Sleep(time.Duration(attempt+1) * 15 * time.Millisecond)
 	}
 	return fmt.Errorf("replace config %q: %w", path, renameErr)
 }

@@ -1122,3 +1122,300 @@ func TestOwnerDrawMenuStructsAndIconRendering(t *testing.T) {
 		}
 	}
 }
+
+func TestToggleSwitchConcentricityAndSymmetry(t *testing.T) {
+	token, err := StartupGDIPlus()
+	if err != nil {
+		t.Fatalf("StartupGDIPlus failed: %v", err)
+	}
+	defer ShutdownGDIPlus(token)
+
+	dpis := []uint32{96, 120, 144, 168, 192}
+	for _, dpi := range dpis {
+		swW, swH, pad := toggleSwitchGeometry(dpi)
+		if swH%2 != 0 {
+			t.Fatalf("dpi=%d: toggle height %d must be even", dpi, swH)
+		}
+		if swH-2*pad <= 0 {
+			t.Fatalf("dpi=%d: invalid knob diameter for h=%d pad=%d", dpi, swH, pad)
+		}
+
+		for _, isLight := range []bool{false, true} {
+			pal := getDashboardPalette(isLight)
+			for _, on := range []bool{false, true} {
+				track := pal.switchOffBG
+				if on {
+					track = pal.brandCyan
+				}
+				bmp, buf, err := renderToggleSwitchBitmap(swW, swH, pad, track, pal.knobARGB, on)
+				if err != nil || bmp == 0 {
+					t.Fatalf("dpi=%d light=%v on=%v render failed: %v", dpi, isLight, on, err)
+				}
+
+				// 1. Vertical symmetry across all rows and columns of the toggle sprite.
+				for y := int32(0); y < swH/2; y++ {
+					yMirror := swH - 1 - y
+					for x := int32(0); x < swW; x++ {
+						i1 := (int(y)*int(swW) + int(x)) * 4
+						i2 := (int(yMirror)*int(swW) + int(x)) * 4
+						if buf[i1] != buf[i2] || buf[i1+1] != buf[i2+1] || buf[i1+2] != buf[i2+2] || buf[i1+3] != buf[i2+3] {
+							_, _, _ = procGdipDisposeImage.Call(bmp)
+							t.Fatalf("dpi=%d light=%v on=%v vertical asymmetry at (%d,%d) vs (%d,%d): %v != %v",
+								dpi, isLight, on, x, y, x, yMirror, buf[i1:i1+4], buf[i2:i2+4])
+						}
+					}
+				}
+
+				// 2. Knob interior & AA edge horizontal symmetry within the solid cap interior disk.
+				capStart := int32(0)
+				if on {
+					capStart = swW - swH
+				}
+				rSolidSq := float64(swH/2-1) * float64(swH/2-1)
+				for y := int32(0); y < swH; y++ {
+					dy := float64(y) + 0.5 - float64(swH)/2.0
+					for dx := int32(0); dx < swH/2; dx++ {
+						rx := float64(dx) + 0.5 - float64(swH)/2.0
+						if rx*rx+dy*dy > rSolidSq {
+							continue
+						}
+						x1 := capStart + dx
+						x2 := capStart + swH - 1 - dx
+						i1 := (int(y)*int(swW) + int(x1)) * 4
+						i2 := (int(y)*int(swW) + int(x2)) * 4
+						if buf[i1] != buf[i2] || buf[i1+1] != buf[i2+1] || buf[i1+2] != buf[i2+2] || buf[i1+3] != buf[i2+3] {
+							_, _, _ = procGdipDisposeImage.Call(bmp)
+							t.Fatalf("dpi=%d light=%v on=%v knob horizontal asymmetry at (%d,%d) vs (%d,%d): %v != %v",
+								dpi, isLight, on, x1, y, x2, y, buf[i1:i1+4], buf[i2:i2+4])
+						}
+					}
+				}
+
+				// 3. Cardinal padding check: top, bottom, and cap-side borders must all equal pad.
+				cx := capStart + swH/2
+				cy := swH / 2
+				isKnobSolid := func(x, y int32) bool {
+					idx := (int(y)*int(swW) + int(x)) * 4
+					return buf[idx+2] == buf[idx+1] && buf[idx+1] == buf[idx] && buf[idx+3] == 255
+				}
+				topBorderPx := int32(0)
+				for y := int32(0); y < cy && !isKnobSolid(cx, y); y++ {
+					topBorderPx++
+				}
+				botBorderPx := int32(0)
+				for y := swH - 1; y >= cy && !isKnobSolid(cx, y); y-- {
+					botBorderPx++
+				}
+				sideBorderPx := int32(0)
+				if on {
+					for x := swW - 1; x >= cx && !isKnobSolid(x, cy); x-- {
+						sideBorderPx++
+					}
+				} else {
+					for x := int32(0); x < cx && !isKnobSolid(x, cy); x++ {
+						sideBorderPx++
+					}
+				}
+				if topBorderPx != pad || botBorderPx != pad || sideBorderPx != pad {
+					_, _, _ = procGdipDisposeImage.Call(bmp)
+					t.Fatalf("dpi=%d light=%v on=%v uneven borders top=%d bot=%d side=%d, want %d",
+						dpi, isLight, on, topBorderPx, botBorderPx, sideBorderPx, pad)
+				}
+
+				// 4. Opposite state reflection symmetry: ON mirrored horizontally matches OFF bit-for-bit.
+				if on {
+					offBmp, offBuf, offErr := renderToggleSwitchBitmap(swW, swH, pad, track, pal.knobARGB, false)
+					if offErr != nil || offBmp == 0 {
+						_, _, _ = procGdipDisposeImage.Call(bmp)
+						t.Fatalf("dpi=%d light=%v off reflection render failed: %v", dpi, isLight, offErr)
+					}
+					for y := int32(0); y < swH; y++ {
+						for x := int32(0); x < swW; x++ {
+							i1 := (int(y)*int(swW) + int(x)) * 4
+							i2 := (int(y)*int(swW) + int(swW-1-x)) * 4
+							if buf[i1] != offBuf[i2] || buf[i1+1] != offBuf[i2+1] || buf[i1+2] != offBuf[i2+2] || buf[i1+3] != offBuf[i2+3] {
+								_, _, _ = procGdipDisposeImage.Call(offBmp)
+								_, _, _ = procGdipDisposeImage.Call(bmp)
+								t.Fatalf("dpi=%d light=%v ON/OFF reflection mismatch at (%d,%d)", dpi, isLight, x, y)
+							}
+						}
+					}
+					_, _, _ = procGdipDisposeImage.Call(offBmp)
+				}
+
+				_, _, _ = procGdipDisposeImage.Call(bmp)
+			}
+		}
+	}
+
+	// 4. Composite ON toggle through SettingsWindow.renderScene at 125% DPI (120) and verify canvas symmetry.
+	app := NewApp(config.Default(), "", network.NewMonitor(), false)
+	app.cfg.StartWithWindows = true
+	app.fontFamily = ResolveTaskbarFontName()
+	sw := NewSettingsWindow(app)
+	sw.dpi = 120
+	sw.clientW = scaleDPIInt(baseWindowW, 120)
+	sw.clientH = scaleDPIInt(baseWindowH, 120)
+	defer sw.releaseDrawResources()
+
+	sw.ensureDrawResources(120, false)
+	var gfx uintptr
+	st, _, _ := procGdipGetImageGraphicsContext.Call(sw.gpBitmap, uintptr(unsafe.Pointer(&gfx)))
+	if st != 0 || gfx == 0 {
+		t.Fatalf("GdipGetImageGraphicsContext failed: %d", st)
+	}
+	sw.renderScene(gfx, sw.clientW, sw.clientH, 120, false)
+	_, _, _ = procGdipDeleteGraphics.Call(gfx)
+
+	var swBounds rect
+	found := false
+	for _, c := range sw.controls {
+		if c.action == actAutoStart {
+			swBounds = c.bounds
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("actAutoStart control missing after renderScene")
+	}
+	swW, swH, _ := toggleSwitchGeometry(120)
+	pix := unsafe.Slice((*byte)(sw.pBits), int(sw.dibW)*int(sw.dibH)*4)
+	for y := int32(0); y < swH/2; y++ {
+		yTop := swBounds.Top + y
+		yBot := swBounds.Top + swH - 1 - y
+		for x := int32(0); x < swW; x++ {
+			px := swBounds.Left + x
+			iTop := (int(yTop)*int(sw.dibW) + int(px)) * 4
+			iBot := (int(yBot)*int(sw.dibW) + int(px)) * 4
+			if pix[iTop] != pix[iBot] || pix[iTop+1] != pix[iBot+1] || pix[iTop+2] != pix[iBot+2] {
+				t.Fatalf("composited canvas vertical asymmetry at row offset %d, col %d: top=%v bot=%v",
+					y, x, pix[iTop:iTop+3], pix[iBot:iBot+3])
+			}
+		}
+	}
+}
+
+func TestToggleSwitchAnimationCurvesAndFrames(t *testing.T) {
+	token, err := StartupGDIPlus()
+	if err != nil {
+		t.Fatalf("StartupGDIPlus failed: %v", err)
+	}
+	defer ShutdownGDIPlus(token)
+
+	// 1. Easing curve boundaries, strict monotonicity, and smooth deceleration (fast start, soft landing).
+	if got := cubicBezierEase(0, 0.2, 0.0, 0.0, 1.0); got != 0 {
+		t.Fatalf("cubicBezierEase(0) = %v, want 0", got)
+	}
+	if got := cubicBezierEase(1, 0.2, 0.0, 0.0, 1.0); got != 1 {
+		t.Fatalf("cubicBezierEase(1) = %v, want 1", got)
+	}
+	prev := 0.0
+	for i := 1; i <= 20; i++ {
+		u := float64(i) / 20.0
+		v := cubicBezierEase(u, 0.2, 0.0, 0.0, 1.0)
+		if v < prev || v > 1.0 {
+			t.Fatalf("cubicBezierEase(%v) = %v out of order (prev=%v)", u, v, prev)
+		}
+		prev = v
+	}
+	if mid := cubicBezierEase(0.5, 0.2, 0.0, 0.0, 1.0); mid <= 0.7 {
+		t.Fatalf("cubicBezierEase(0.5) = %v, expected smooth ease-out > 0.7", mid)
+	}
+
+	// 2. Color crossfade boundaries.
+	pal := getDashboardPalette(false)
+	if got := lerpARGB(pal.switchOffBG, pal.brandCyan, 0); got != pal.switchOffBG {
+		t.Fatalf("lerpARGB(t=0) = 0x%08X, want 0x%08X", got, pal.switchOffBG)
+	}
+	if got := lerpARGB(pal.switchOffBG, pal.brandCyan, 1); got != pal.brandCyan {
+		t.Fatalf("lerpARGB(t=1) = 0x%08X, want 0x%08X", got, pal.brandCyan)
+	}
+	if midCol := lerpARGB(pal.switchOffBG, pal.brandCyan, 0.5); midCol == pal.switchOffBG || midCol == pal.brandCyan {
+		t.Fatalf("lerpARGB(t=0.5) = 0x%08X did not blend", midCol)
+	}
+
+	// 3. Intermediate animation frames remain vertically symmetric and advance knob centroid monotonically.
+	swW, swH, pad := toggleSwitchGeometry(120)
+	buf := make([]byte, int(swW)*int(swH)*4)
+	prevKnobX := -1.0
+	for _, pos := range []float64{0.0, 0.2, 0.5, 0.85, 1.0} {
+		col := lerpARGB(pal.switchOffBG, pal.brandCyan, pos)
+		renderToggleSwitchPixels(buf, swW, swH, pad, col, pal.knobARGB, pos)
+
+		for y := int32(0); y < swH/2; y++ {
+			yBot := swH - 1 - y
+			for x := int32(0); x < swW; x++ {
+				i1 := (int(y)*int(swW) + int(x)) * 4
+				i2 := (int(yBot)*int(swW) + int(x)) * 4
+				if buf[i1] != buf[i2] || buf[i1+1] != buf[i2+1] || buf[i1+2] != buf[i2+2] || buf[i1+3] != buf[i2+3] {
+					t.Fatalf("pos=%.2f vertical asymmetry at (%d,%d)", pos, x, y)
+				}
+			}
+		}
+
+		// Compute solid white knob centroid X.
+		sumX, count := 0.0, 0.0
+		for y := pad; y < swH-pad; y++ {
+			for x := int32(0); x < swW; x++ {
+				idx := (int(y)*int(swW) + int(x)) * 4
+				if buf[idx] == 255 && buf[idx+1] == 255 && buf[idx+2] == 255 && buf[idx+3] == 255 {
+					sumX += float64(x)
+					count++
+				}
+			}
+		}
+		if count == 0 {
+			t.Fatalf("pos=%.2f rendered no solid knob pixels", pos)
+		}
+		cx := sumX / count
+		if cx <= prevKnobX {
+			t.Fatalf("pos=%.2f knob centroid X=%.2f did not advance past %.2f", pos, cx, prevKnobX)
+		}
+		prevKnobX = cx
+	}
+
+	// 4. Mid-flight renderScene compositing via SettingsWindow.
+	app := NewApp(config.Default(), "", network.NewMonitor(), false)
+	app.fontFamily = ResolveTaskbarFontName()
+	sw := NewSettingsWindow(app)
+	sw.dpi = 120
+	sw.clientW = scaleDPIInt(baseWindowW, 120)
+	sw.clientH = scaleDPIInt(baseWindowH, 120)
+	defer sw.releaseDrawResources()
+
+	sw.ensureDrawResources(120, false)
+	sw.switchFrom = 0.0
+	sw.switchTarget = 1.0
+	sw.switchPos = 0.5
+	sw.switchAnimating = true
+
+	var gfx uintptr
+	st, _, _ := procGdipGetImageGraphicsContext.Call(sw.gpBitmap, uintptr(unsafe.Pointer(&gfx)))
+	if st != 0 || gfx == 0 {
+		t.Fatalf("GdipGetImageGraphicsContext failed: %d", st)
+	}
+	sw.renderScene(gfx, sw.clientW, sw.clientH, 120, false)
+	_, _, _ = procGdipDeleteGraphics.Call(gfx)
+
+	var swBounds rect
+	for _, c := range sw.controls {
+		if c.action == actAutoStart {
+			swBounds = c.bounds
+			break
+		}
+	}
+	pix := unsafe.Slice((*byte)(sw.pBits), int(sw.dibW)*int(sw.dibH)*4)
+	for y := int32(0); y < swH/2; y++ {
+		yTop := swBounds.Top + y
+		yBot := swBounds.Top + swH - 1 - y
+		for x := int32(0); x < swW; x++ {
+			px := swBounds.Left + x
+			iTop := (int(yTop)*int(sw.dibW) + int(px)) * 4
+			iBot := (int(yBot)*int(sw.dibW) + int(px)) * 4
+			if pix[iTop] != pix[iBot] || pix[iTop+1] != pix[iBot+1] || pix[iTop+2] != pix[iBot+2] {
+				t.Fatalf("animated canvas vertical asymmetry at (%d,%d)", x, y)
+			}
+		}
+	}
+}

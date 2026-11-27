@@ -21,10 +21,11 @@ const (
 	repoURL           = "https://github.com/theshubh77/WhatsMySpeed"
 	linkedinURL       = "https://www.linkedin.com/in/theshubh77"
 
-	baseWindowW    = 626
-	baseWindowH    = 756
-	timerAnimID    = 10
-	animIntervalMs = 16
+	baseWindowW        = 626
+	baseWindowH        = 756
+	timerAnimID        = 10
+	animIntervalMs     = 16
+	switchAnimDuration = 0.16
 )
 
 type controlAction int
@@ -192,31 +193,51 @@ type SettingsWindow struct {
 	dlSmallBuf     []byte
 	ulSmallBmp     uintptr
 	ulSmallBuf     []byte
-	dlMetricBmp    uintptr
-	dlMetricBuf    []byte
-	ulMetricBmp    uintptr
-	ulMetricBuf    []byte
-	resDPI         uint32
-	resLight       bool
+	dlMetricBmp       uintptr
+	dlMetricBuf       []byte
+	ulMetricBmp       uintptr
+	ulMetricBuf       []byte
+	switchOnBmp       uintptr
+	switchOnBuf       []byte
+	switchOffBmp      uintptr
+	switchOffBuf      []byte
+	switchOffHoverBmp uintptr
+	switchOffHoverBuf []byte
+	switchAnimBuf     []byte
+	resDPI            uint32
+	resLight          bool
 
-	// Speed test runtime state & 60fps gauge smoothing.
-	stMu          sync.Mutex
-	stRunning     bool
-	stCancel      context.CancelFunc
-	stProgress    speedtest.Progress
-	animTimerOn   bool
-	animLastTick  time.Time
-	animGaugeFrac float64
-	animDisplay   float64
+	// Speed test runtime state & 60fps UI/gauge smoothing.
+	stMu            sync.Mutex
+	stRunning       bool
+	stCancel        context.CancelFunc
+	stProgress      speedtest.Progress
+	animTimerOn     bool
+	animLastTick    time.Time
+	animGaugeFrac   float64
+	animDisplay     float64
+	switchPos       float64
+	switchFrom      float64
+	switchTarget    float64
+	switchElapsed   float64
+	switchDur       float64
+	switchAnimating bool
 }
 
 // NewSettingsWindow creates a SettingsWindow bound to app.
 func NewSettingsWindow(app *App) *SettingsWindow {
+	initPos := 0.0
+	if app != nil && app.cfg.StartWithWindows {
+		initPos = 1.0
+	}
 	return &SettingsWindow{
 		app: app,
 		stProgress: speedtest.Progress{
 			Phase: speedtest.PhaseIdle,
 		},
+		switchPos:    initPos,
+		switchFrom:   initPos,
+		switchTarget: initPos,
 	}
 }
 
@@ -249,6 +270,7 @@ func (w *SettingsWindow) Show(startSpeedTest bool) {
 		w.stMu.Unlock()
 	}
 
+	w.syncSwitchState(false)
 	w.applyTitleBarTheme()
 	w.ensureOnScreen()
 	if iconic, _, _ := procIsIconic.Call(w.hwnd); iconic != 0 {
@@ -278,6 +300,7 @@ func (w *SettingsWindow) RefreshAppearance() {
 	if w.hwnd == 0 {
 		return
 	}
+	w.syncSwitchState(true)
 	w.applyTitleBarTheme()
 	if w.isVisible() {
 		w.invalidate()
@@ -673,7 +696,7 @@ func (w *SettingsWindow) handleMessage(message uint32, wParam, lParam uintptr) u
 			p := w.stProgress
 			running := w.stRunning
 			w.stMu.Unlock()
-			if !running {
+			if !running && !w.switchAnimating {
 				w.animGaugeFrac, w.animDisplay = targetGaugeState(p)
 				w.stopAnimTimer()
 			}
@@ -701,6 +724,7 @@ func (w *SettingsWindow) handleMessage(message uint32, wParam, lParam uintptr) u
 	case wmClose:
 		w.hoveredAct = actNone
 		w.tracking = false
+		w.syncSwitchState(false)
 		w.stopAnimTimer()
 		w.CancelSpeedTest()
 		_, _, _ = procShowWindow.Call(w.hwnd, swHide)
@@ -859,6 +883,82 @@ func targetGaugeState(p speedtest.Progress) (frac float64, val float64) {
 	}
 }
 
+func togglePosFromBool(on bool) float64 {
+	if on {
+		return 1.0
+	}
+	return 0.0
+}
+
+// syncSwitchState updates the toggle switch target from app.cfg.StartWithWindows and, when
+// animate is true on a visible window, starts a smooth glide from the current knob position.
+func (w *SettingsWindow) syncSwitchState(animate bool) {
+	want := togglePosFromBool(w.app != nil && w.app.cfg.StartWithWindows)
+	if !animate || !w.isVisible() {
+		w.switchPos = want
+		w.switchFrom = want
+		w.switchTarget = want
+		w.switchElapsed = 0
+		w.switchDur = 0
+		w.switchAnimating = false
+		return
+	}
+	if want == w.switchTarget {
+		return
+	}
+	w.switchFrom = w.switchPos
+	w.switchTarget = want
+	w.switchElapsed = 0
+	scale := math.Abs(w.switchTarget - w.switchFrom)
+	if scale < 0.45 {
+		scale = 0.45
+	}
+	w.switchDur = switchAnimDuration * scale
+	w.switchAnimating = true
+	w.startAnimTimer()
+}
+
+// cubicBezierEase evaluates CSS-style cubic-bezier(x1, y1, x2, y2) for u in [0..1].
+func cubicBezierEase(u, x1, y1, x2, y2 float64) float64 {
+	if u <= 0 {
+		return 0
+	}
+	if u >= 1 {
+		return 1
+	}
+	sample := func(t, a, b float64) float64 {
+		mt := 1.0 - t
+		return 3.0*mt*mt*t*a + 3.0*mt*t*t*b + t*t*t
+	}
+	slope := func(t, a, b float64) float64 {
+		mt := 1.0 - t
+		return 3.0*mt*mt*a + 6.0*mt*t*(b-a) + 3.0*t*t*(1.0-b)
+	}
+	t := u
+	lo, hi := 0.0, 1.0
+	for i := 0; i < 8; i++ {
+		x := sample(t, x1, x2) - u
+		if math.Abs(x) < 1e-6 {
+			break
+		}
+		if x < 0 {
+			lo = t
+		} else {
+			hi = t
+		}
+		dx := slope(t, x1, x2)
+		if math.Abs(dx) > 1e-6 {
+			next := t - x/dx
+			if next > lo && next < hi {
+				t = next
+				continue
+			}
+		}
+		t = 0.5 * (lo + hi)
+	}
+	return sample(t, y1, y2)
+}
+
 func (w *SettingsWindow) stepAnimation() {
 	now := time.Now()
 	dt := now.Sub(w.animLastTick).Seconds()
@@ -883,7 +983,31 @@ func (w *SettingsWindow) stepAnimation() {
 	w.animGaugeFrac += (targetFrac - w.animGaugeFrac) * alpha
 	w.animDisplay += (targetVal - w.animDisplay) * alpha
 
+	switchDone := true
+	if w.switchAnimating {
+		w.switchElapsed += dt
+		dur := w.switchDur
+		if dur <= 0 {
+			dur = switchAnimDuration
+		}
+		u := w.switchElapsed / dur
+		if u >= 1.0 {
+			w.switchPos = w.switchTarget
+			w.switchFrom = w.switchTarget
+			w.switchAnimating = false
+		} else {
+			eased := cubicBezierEase(u, 0.2, 0.0, 0.0, 1.0)
+			w.switchPos = w.switchFrom + (w.switchTarget-w.switchFrom)*eased
+			switchDone = false
+		}
+	}
+
 	if !w.isVisible() {
+		if w.switchAnimating {
+			w.switchPos = w.switchTarget
+			w.switchFrom = w.switchTarget
+			w.switchAnimating = false
+		}
 		if !running {
 			w.animGaugeFrac = targetFrac
 			w.animDisplay = targetVal
@@ -892,9 +1016,12 @@ func (w *SettingsWindow) stepAnimation() {
 		return
 	}
 
-	if !running && math.Abs(targetFrac-w.animGaugeFrac) < 0.002 && math.Abs(targetVal-w.animDisplay) < 0.05 {
+	gaugeDone := !running && math.Abs(targetFrac-w.animGaugeFrac) < 0.002 && math.Abs(targetVal-w.animDisplay) < 0.05
+	if gaugeDone {
 		w.animGaugeFrac = targetFrac
 		w.animDisplay = targetVal
+	}
+	if gaugeDone && switchDone {
 		w.stopAnimTimer()
 	}
 	w.invalidate()
@@ -994,6 +1121,11 @@ func (w *SettingsWindow) ensureDrawResources(dpi uint32, isLight bool) {
 		metricArrowPx := scaleDPIInt(18, dpi)
 		w.dlMetricBmp, w.dlMetricBuf, _ = RasterizeSVGToBitmap(assets.IconArrowDownBold, metricArrowPx, metricArrowPx, pal.brandCyan)
 		w.ulMetricBmp, w.ulMetricBuf, _ = RasterizeSVGToBitmap(assets.IconArrowUpBold, metricArrowPx, metricArrowPx, pal.brandLime)
+
+		swW, swH, swPad := toggleSwitchGeometry(dpi)
+		w.switchOnBmp, w.switchOnBuf, _ = renderToggleSwitchBitmap(swW, swH, swPad, pal.brandCyan, pal.knobARGB, true)
+		w.switchOffBmp, w.switchOffBuf, _ = renderToggleSwitchBitmap(swW, swH, swPad, pal.switchOffBG, pal.knobARGB, false)
+		w.switchOffHoverBmp, w.switchOffHoverBuf, _ = renderToggleSwitchBitmap(swW, swH, swPad, pal.pillHoverBG, pal.knobARGB, false)
 
 		w.resDPI = dpi
 		w.resLight = isLight
@@ -1678,8 +1810,7 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 	drawCard(marginX, footY, cardW, footH, s(16))
 
 	autoStart := cfg.StartWithWindows
-	swW := s(48)
-	swH := s(26)
+	swW, swH, swPad := toggleSwitchGeometry(dpi)
 	swX := marginX + s(16)
 	swY := footY + (footTopH-swH)/2
 
@@ -1690,16 +1821,59 @@ func (w *SettingsWindow) renderScene(gfx uintptr, width, height int32, dpi uint3
 		selected: autoStart,
 	})
 
-	trackBrush := bSwitchOff
-	knobX := swX + s(3)
-	if autoStart {
-		trackBrush = bCyan
-		knobX = swX + swW - s(23)
-	} else if w.hoveredAct == actAutoStart {
-		trackBrush = bPillHover
+	if w.switchAnimating {
+		animPos := w.switchPos
+		if animPos < 0 {
+			animPos = 0
+		} else if animPos > 1 {
+			animPos = 1
+		}
+		offTrack := pal.switchOffBG
+		if w.hoveredAct == actAutoStart {
+			offTrack = pal.pillHoverBG
+		}
+		trackCol := lerpARGB(offTrack, pal.brandCyan, animPos)
+		needBytes := int(swW) * int(swH) * 4
+		if len(w.switchAnimBuf) != needBytes {
+			w.switchAnimBuf = make([]byte, needBytes)
+		}
+		renderToggleSwitchPixels(w.switchAnimBuf, swW, swH, swPad, trackCol, pal.knobARGB, animPos)
+		var animBmp uintptr
+		st, _, _ := procGdipCreateBitmapFromScan0.Call(
+			uintptr(swW),
+			uintptr(swH),
+			uintptr(swW*4),
+			gpPixelFormat32bppPARGB,
+			uintptr(unsafe.Pointer(&w.switchAnimBuf[0])),
+			uintptr(unsafe.Pointer(&animBmp)),
+		)
+		if st == 0 && animBmp != 0 {
+			_, _, _ = procGdipDrawImageRectI.Call(gfx, animBmp, uintptr(swX), uintptr(swY), uintptr(swW), uintptr(swH))
+			_, _, _ = procGdipDisposeImage.Call(animBmp)
+		}
+	} else {
+		swBmp := w.switchOffBmp
+		if autoStart {
+			swBmp = w.switchOnBmp
+		} else if w.hoveredAct == actAutoStart && w.switchOffHoverBmp != 0 {
+			swBmp = w.switchOffHoverBmp
+		}
+		if swBmp != 0 {
+			_, _, _ = procGdipDrawImageRectI.Call(gfx, swBmp, uintptr(swX), uintptr(swY), uintptr(swW), uintptr(swH))
+		} else {
+			trackBrush := bSwitchOff
+			knobD := swH - 2*swPad
+			knobX := swX + swPad
+			if autoStart {
+				trackBrush = bCyan
+				knobX = swX + swW - swPad - knobD
+			} else if w.hoveredAct == actAutoStart {
+				trackBrush = bPillHover
+			}
+			gpFillRoundedRect(gfx, trackBrush, swX, swY, swW, swH, swH/2)
+			gpFillRoundedRect(gfx, bKnob, knobX, swY+swPad, knobD, knobD, knobD/2)
+		}
 	}
-	gpFillRoundedRect(gfx, trackBrush, swX, swY, swW, swH, swH/2)
-	gpFillRoundedRect(gfx, bKnob, knobX, swY+s(3), s(20), s(20), s(10))
 	pillFootH := s(38)
 	pillFootY := footY + (footTopH-pillFootH)/2
 
@@ -1855,6 +2029,7 @@ func (w *SettingsWindow) releaseFontAndIconResources() {
 		&w.moonBmp, &w.moonSelBmp, &w.monBmp, &w.monSelBmp,
 		&w.githubBmp, &w.heartBmp, &w.madeHeartBmp,
 		&w.dlSmallBmp, &w.ulSmallBmp, &w.dlMetricBmp, &w.ulMetricBmp,
+		&w.switchOnBmp, &w.switchOffBmp, &w.switchOffHoverBmp,
 	} {
 		if *b != 0 {
 			_, _, _ = procGdipDisposeImage.Call(*b)
@@ -1868,7 +2043,249 @@ func (w *SettingsWindow) releaseFontAndIconResources() {
 	w.githubBuf, w.heartBuf, w.madeHeartBuf = nil, nil, nil
 	w.dlSmallBuf, w.ulSmallBuf = nil, nil
 	w.dlMetricBuf, w.ulMetricBuf = nil, nil
+	w.switchOnBuf, w.switchOffBuf, w.switchOffHoverBuf = nil, nil, nil
+	w.switchAnimBuf = nil
 	w.resDPI = 0
+}
+
+func toggleSwitchGeometry(dpi uint32) (swW, swH, pad int32) {
+	swW = scaleDPIInt(48, dpi)
+	// Keep swH even at every DPI so both semicircle end-caps and the circular knob
+	// share an exact center coordinate and equal top, bottom, and side margins.
+	swH = int32(math.Round(float64(dpi)*26.0/96.0/2.0)) * 2
+	if swH < 14 {
+		swH = 14
+	}
+	pad = scaleDPIInt(3, dpi)
+	if pad < 2 {
+		pad = 2
+	}
+	if maxPad := (swH - 6) / 2; pad > maxPad {
+		pad = maxPad
+	}
+	return swW, swH, pad
+}
+
+func clampToggleByte(v float64) byte {
+	if v <= 0 {
+		return 0
+	}
+	if v >= 255 {
+		return 255
+	}
+	return byte(v)
+}
+
+func lerpARGB(c1, c2 uint32, t float64) uint32 {
+	if t <= 0 {
+		return c1
+	}
+	if t >= 1 {
+		return c2
+	}
+	lerpCh := func(shift uint) uint32 {
+		a := float64((c1 >> shift) & 0xFF)
+		b := float64((c2 >> shift) & 0xFF)
+		return uint32(clampToggleByte(math.Round(a+(b-a)*t))) << shift
+	}
+	return lerpCh(24) | lerpCh(16) | lerpCh(8) | lerpCh(0)
+}
+
+func capsuleSDF(x, y, cx0, cx1, cy, r float64) float64 {
+	cx := x
+	if cx < cx0 {
+		cx = cx0
+	} else if cx > cx1 {
+		cx = cx1
+	}
+	return math.Hypot(x-cx, y-cy) - r
+}
+
+// renderToggleSwitchPixels draws a 32bpp PARGB toggle switch into buf for pos in [0..1]
+// using 8x8 supersampled signed-distance coverage on edge pixels. During mid-transition
+// (0 < pos < 1), the knob subtly elongates horizontally proportionally to glide speed
+// and settles back into a pure circle at rest.
+func renderToggleSwitchPixels(buf []byte, w, h, pad int32, trackARGB, knobARGB uint32, pos float64) {
+	if w <= 0 || h <= 0 || len(buf) < int(w)*int(h)*4 {
+		return
+	}
+	if pos < 0 {
+		pos = 0
+	} else if pos > 1 {
+		pos = 1
+	}
+
+	const sub = 8
+	const subF = float64(sub)
+	const invSamples = 1.0 / float64(sub*sub)
+
+	cy := float64(h) / 2.0
+	rTrack := cy
+	leftCx := rTrack
+	rightCx := float64(w) - rTrack
+	if rightCx < leftCx {
+		mid := float64(w) / 2.0
+		leftCx, rightCx = mid, mid
+	}
+	rKnob := rTrack - float64(pad)
+	if rKnob < 1 {
+		rKnob = 1
+	}
+	knobCx := leftCx + (rightCx-leftCx)*pos
+	glide := 4.0 * pos * (1.0 - pos)
+	halfStretch := math.Min(rKnob*0.08*glide, math.Min(knobCx-leftCx, rightCx-knobCx))
+	if halfStretch < 0 {
+		halfStretch = 0
+	}
+	kLeftCx := knobCx - halfStretch
+	kRightCx := knobCx + halfStretch
+
+	rTrackSq := rTrack * rTrack
+	rKnobSq := rKnob * rKnob
+
+	ta := float64((trackARGB>>24)&0xFF) / 255.0
+	tr := float64((trackARGB>>16)&0xFF) * ta
+	tg := float64((trackARGB>>8)&0xFF) * ta
+	tb := float64(trackARGB&0xFF) * ta
+
+	ka := float64((knobARGB>>24)&0xFF) / 255.0
+	kr := float64((knobARGB>>16)&0xFF) * ka
+	kg := float64((knobARGB>>8)&0xFF) * ka
+	kb := float64(knobARGB&0xFF) * ka
+
+	tSolidA := clampToggleByte(math.Round(ta * 255.0))
+	tSolidR := clampToggleByte(math.Round(tr))
+	tSolidG := clampToggleByte(math.Round(tg))
+	tSolidB := clampToggleByte(math.Round(tb))
+
+	kSolidA := clampToggleByte(math.Round((ka + ta*(1.0-ka)) * 255.0))
+	kSolidR := clampToggleByte(math.Round(kr + tr*(1.0-ka)))
+	kSolidG := clampToggleByte(math.Round(kg + tg*(1.0-ka)))
+	kSolidB := clampToggleByte(math.Round(kb + tb*(1.0-ka)))
+
+	for py := int32(0); py < h; py++ {
+		rowOff := int(py) * int(w) * 4
+		yc := float64(py) + 0.5
+		for px := int32(0); px < w; px++ {
+			xc := float64(px) + 0.5
+			off := rowOff + int(px)*4
+
+			dTrack := capsuleSDF(xc, yc, leftCx, rightCx, cy, rTrack)
+			dKnob := capsuleSDF(xc, yc, kLeftCx, kRightCx, cy, rKnob)
+
+			// Distance from pixel center to any pixel corner is sqrt(0.5^2+0.5^2) < 0.75,
+			// so strictly interior/exterior pixels skip subpixel sampling identically.
+			if dKnob <= -0.75 {
+				buf[off+0] = kSolidB
+				buf[off+1] = kSolidG
+				buf[off+2] = kSolidR
+				buf[off+3] = kSolidA
+				continue
+			}
+			if dTrack >= 0.75 && dKnob >= 0.75 {
+				buf[off+0] = 0
+				buf[off+1] = 0
+				buf[off+2] = 0
+				buf[off+3] = 0
+				continue
+			}
+			if dTrack <= -0.75 && dKnob >= 0.75 {
+				buf[off+0] = tSolidB
+				buf[off+1] = tSolidG
+				buf[off+2] = tSolidR
+				buf[off+3] = tSolidA
+				continue
+			}
+
+			var trackHits, knobHits int
+			for sy := 0; sy < sub; sy++ {
+				y := float64(py) + (float64(sy)+0.5)/subF
+				dy := y - cy
+				dySq := dy * dy
+				for sx := 0; sx < sub; sx++ {
+					x := float64(px) + (float64(sx)+0.5)/subF
+					cxCap := x
+					if cxCap < leftCx {
+						cxCap = leftCx
+					} else if cxCap > rightCx {
+						cxCap = rightCx
+					}
+					dxT := x - cxCap
+					if dxT*dxT+dySq <= rTrackSq {
+						trackHits++
+					}
+					cxKnob := x
+					if cxKnob < kLeftCx {
+						cxKnob = kLeftCx
+					} else if cxKnob > kRightCx {
+						cxKnob = kRightCx
+					}
+					dxK := x - cxKnob
+					if dxK*dxK+dySq <= rKnobSq {
+						knobHits++
+					}
+				}
+			}
+			if trackHits == 0 && knobHits == 0 {
+				buf[off+0] = 0
+				buf[off+1] = 0
+				buf[off+2] = 0
+				buf[off+3] = 0
+				continue
+			}
+			tCov := float64(trackHits) * invSamples
+			kCov := float64(knobHits) * invSamples
+			invK := 1.0 - kCov*ka
+
+			outA := kCov*ka + tCov*ta*invK
+			outR := kCov*kr + tCov*tr*invK
+			outG := kCov*kg + tCov*tg*invK
+			outB := kCov*kb + tCov*tb*invK
+
+			aByte := clampToggleByte(math.Round(outA * 255.0))
+			rByte := clampToggleByte(math.Round(outR))
+			gByte := clampToggleByte(math.Round(outG))
+			bByte := clampToggleByte(math.Round(outB))
+			if rByte > aByte {
+				rByte = aByte
+			}
+			if gByte > aByte {
+				gByte = aByte
+			}
+			if bByte > aByte {
+				bByte = aByte
+			}
+			buf[off+0] = bByte
+			buf[off+1] = gByte
+			buf[off+2] = rByte
+			buf[off+3] = aByte
+		}
+	}
+}
+
+// renderToggleSwitchBitmap renders a 32bpp PARGB toggle switch sprite using 8x8 subpixel
+// analytical capsule + circle coverage so the circular knob sits concentrically centered
+// inside the pill cap with symmetric anti-aliasing on every edge and DPI scaling factor.
+func renderToggleSwitchBitmap(w, h, pad int32, trackARGB, knobARGB uint32, on bool) (uintptr, []byte, error) {
+	if w <= 0 || h <= 0 {
+		return 0, nil, fmt.Errorf("invalid toggle switch dimensions %dx%d", w, h)
+	}
+	buf := make([]byte, int(w)*int(h)*4)
+	renderToggleSwitchPixels(buf, w, h, pad, trackARGB, knobARGB, togglePosFromBool(on))
+
+	var gpBitmap uintptr
+	st, _, _ := procGdipCreateBitmapFromScan0.Call(
+		uintptr(w),
+		uintptr(h),
+		uintptr(w*4),
+		gpPixelFormat32bppPARGB,
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(unsafe.Pointer(&gpBitmap)),
+	)
+	if st != 0 || gpBitmap == 0 {
+		return 0, nil, fmt.Errorf("GdipCreateBitmapFromScan0(toggle) failed with status %d", st)
+	}
+	return gpBitmap, buf, nil
 }
 
 func (w *SettingsWindow) releaseDrawResources() {
