@@ -19,6 +19,31 @@
 - **Microsoft Store (Recommended):** [Download WhatsMySpeed](https://apps.microsoft.com/store/detail/9NJJNDC6VC3Q?cid=DevShareMCLPCS) (signed MSIX package, automatic updates, and clean uninstall).
 - **Standalone EXE / ZIP:** Download the latest portable build (`checksums.txt` included) from [GitHub Releases](https://github.com/theshubh77/WhatsMySpeed/releases/latest).
 
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="docs/screenshots/1-taskbar-meter.png" alt="Live Taskbar Speed Meter" width="420" /><br />
+      <strong>Live Taskbar Speed Meter</strong>
+    </td>
+    <td align="center">
+      <img src="docs/screenshots/2-controls.png" alt="Flexible Controls and Units" width="420" /><br />
+      <strong>Flexible Controls &amp; Units</strong>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="docs/screenshots/3-speed-test.png" alt="Built-In Speed Test Gauge" width="420" /><br />
+      <strong>Built-In Speed Test</strong>
+    </td>
+    <td align="center">
+      <img src="docs/screenshots/4-themes.png" alt="Dark and Light Themes" width="420" /><br />
+      <strong>Dark &amp; Light Themes</strong>
+    </td>
+  </tr>
+</table>
+
 ## Features
 
 - **Real-Time Taskbar Speed Meter:** Polls active network adapters every second via `GetIfTable2`, filtering out loopback and virtual filter shims to avoid double counting.
@@ -41,6 +66,7 @@
 WhatsMySpeed/
 ├── assets/                 # App icon (.ico, .png, .svg) and embedded Phosphor SVGs
 ├── cmd/whatsmyspeed/       # Entry point, single-instance guard, manifest & Win32 resources
+├── docs/screenshots/       # Showcase screenshots for README
 ├── installer/msix/         # Template MSIX manifest and Store tile assets
 ├── internal/
 │   ├── config/             # JSON settings persistence and Windows startup (Run / StartupTask)
