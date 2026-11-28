@@ -24,21 +24,21 @@
 <table>
   <tr>
     <td align="center">
-      <img src="docs/screenshots/1-taskbar-meter.png" alt="Live Taskbar Speed Meter" width="420" /><br />
+      <img src="docs/screenshots/1-taskbar-meter.webp" alt="Live Taskbar Speed Meter" width="420" /><br />
       <strong>Live Taskbar Speed Meter</strong>
     </td>
     <td align="center">
-      <img src="docs/screenshots/2-controls.png" alt="Flexible Controls and Units" width="420" /><br />
+      <img src="docs/screenshots/2-controls.webp" alt="Flexible Controls and Units" width="420" /><br />
       <strong>Flexible Controls &amp; Units</strong>
     </td>
   </tr>
   <tr>
     <td align="center">
-      <img src="docs/screenshots/3-speed-test.png" alt="Built-In Speed Test Gauge" width="420" /><br />
+      <img src="docs/screenshots/3-speed-test.webp" alt="Built-In Speed Test Gauge" width="420" /><br />
       <strong>Built-In Speed Test</strong>
     </td>
     <td align="center">
-      <img src="docs/screenshots/4-themes.png" alt="Dark and Light Themes" width="420" /><br />
+      <img src="docs/screenshots/4-themes.webp" alt="Dark and Light Themes" width="420" /><br />
       <strong>Dark &amp; Light Themes</strong>
     </td>
   </tr>
