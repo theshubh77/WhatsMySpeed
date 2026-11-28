@@ -5,12 +5,19 @@
 <h1 align="center">WhatsMySpeed</h1>
 
 <p align="center">
+  <a href="https://apps.microsoft.com/store/detail/9NJJNDC6VC3Q?cid=DevShareMCLPCS"><img src="https://img.shields.io/badge/Microsoft_Store-Download-0078D4?logo=microsoft&logoColor=white" alt="Microsoft Store" /></a>
+  <a href="https://github.com/theshubh77/WhatsMySpeed/releases/latest"><img src="https://img.shields.io/github/v/release/theshubh77/WhatsMySpeed?color=22D3EE" alt="Latest Release" /></a>
   <img src="https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white" alt="Go 1.27+" />
   <img src="https://img.shields.io/badge/Platform-Windows%2011%20(x64)-0078D4?logo=windows&logoColor=white" alt="Windows 11 x64" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
 </p>
 
 **WhatsMySpeed** is a lightweight, native Windows 11 network speed monitor and speed test app built in pure Go and Win32 APIs (zero CGO). It sits cleanly on the Windows 11 taskbar beside the system tray overflow chevron (`^`) and matches Windows Light, Dark, and High Contrast themes.
+
+## Install
+
+- **Microsoft Store (Recommended):** [Download WhatsMySpeed](https://apps.microsoft.com/store/detail/9NJJNDC6VC3Q?cid=DevShareMCLPCS) (signed MSIX package, automatic updates, and clean uninstall).
+- **Standalone EXE / ZIP:** Download the latest portable build (`checksums.txt` included) from [GitHub Releases](https://github.com/theshubh77/WhatsMySpeed/releases/latest).
 
 ## Features
 
